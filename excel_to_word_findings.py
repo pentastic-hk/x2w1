@@ -53,12 +53,17 @@ All warnings are also collected and summarized at the end of the run.
 WORD TABLE STYLING
 -------------------------------------------------------------------------
     - All text: Times New Roman, 12pt.
+    - All cell content is top-aligned (vertically) and has no extra spacing
+      between wrapped paragraphs within a cell.
     - First row of each finding table (Finding ID / Finding title):
       standard blue shading (#0070C0), white font, bold.
+    - First column, all rows EXCEPT the first row: not bold.
     - Risk Level VALUE cell: shaded according to its risk level
       (Critical=#FF0000, High=#F4B083, Medium=#FFFF00, Low=#00FFFF,
       OFI=#92D050).
     - All other cells: no fill (transparent / white background).
+    - Each finding's table is separated from the next by 2 blank lines
+      (with no extra paragraph spacing added below them).
 
 -------------------------------------------------------------------------
 USAGE
@@ -550,7 +555,8 @@ def _set_cell_text(
     font_color: Optional[RGBColor] = None,
 ) -> None:
     """Write one or more paragraphs of text into a table cell, applying the
-    document-wide font (Times New Roman, 12pt)."""
+    document-wide font (Times New Roman, 12pt) with no extra spacing
+    between wrapped paragraphs."""
     if not paragraphs:
         paragraphs = [""]
     cell.text = ""  # clear default empty paragraph's placeholder run
@@ -565,6 +571,7 @@ def _set_cell_text(
         if font_color is not None:
             run.font.color.rgb = font_color
         p.paragraph_format.space_after = Pt(0)
+        p.paragraph_format.space_before = Pt(0)
 
 
 def add_finding_table(document: Document, finding: Finding) -> None:
@@ -580,7 +587,7 @@ def add_finding_table(document: Document, finding: Finding) -> None:
         (finding.finding_id, [finding.finding_title]),
         ("Risk Description", finding.risk_description),
         ("Risk Level", [finding.risk_level]),
-        ("Impact/Likelihood", [f"{finding.impact}/{finding.likelihood}" if (finding.impact or finding.likelihood) else ""]),
+        ("Impact/Likelihood", [f"{finding.impact} / {finding.likelihood}" if (finding.impact or finding.likelihood) else ""]),
         ("OWASP Top 10", [""]),
         ("Affected Asset", [finding.affected]),
         ("Evidence for the finding", [""]),
@@ -616,6 +623,19 @@ def add_finding_table(document: Document, finding: Finding) -> None:
         value_cell.vertical_alignment = WD_ALIGN_VERTICAL.TOP
 
 
+def _add_blank_separator_paragraph(document: Document):
+    """Add a blank paragraph used purely as vertical whitespace between
+    tables, with all paragraph spacing zeroed out so it doesn't introduce
+    any *extra* space beyond the blank line itself."""
+    p = document.add_paragraph("")
+    p.paragraph_format.space_before = Pt(0)
+    p.paragraph_format.space_after = Pt(0)
+    for run in p.runs:
+        run.font.name = FONT_NAME
+        run.font.size = Pt(FONT_SIZE)
+    return p
+
+
 def build_document(groups: list[tuple[Optional[str], list[Finding]]], title: str) -> Document:
     document = Document()
 
@@ -628,6 +648,8 @@ def build_document(groups: list[tuple[Optional[str], list[Finding]]], title: str
     style = document.styles["Normal"]
     style.font.name = FONT_NAME
     style.font.size = Pt(FONT_SIZE)
+    style.paragraph_format.space_before = Pt(0)
+    style.paragraph_format.space_after = Pt(0)
 
     # Apply the same font/size to heading styles too, so ALL text in the
     # document (including section headings) uses Times New Roman 12pt.
@@ -648,9 +670,10 @@ def build_document(groups: list[tuple[Optional[str], list[Finding]]], title: str
         for finding in findings:
             add_finding_table(document, finding)
             total += 1
-            # Separate each table with 2 empty lines
-            document.add_paragraph("")
-            document.add_paragraph("")
+            # Separate each table with 2 empty lines (no extra paragraph
+            # spacing added below them).
+            _add_blank_separator_paragraph(document)
+            _add_blank_separator_paragraph(document)
 
     if total == 0:
         warn("No findings were extracted - the output document will be empty of tables.")
