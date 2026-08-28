@@ -50,6 +50,17 @@ The script warns (stderr) - but does NOT fail - on unexpected values for:
 All warnings are also collected and summarized at the end of the run.
 
 -------------------------------------------------------------------------
+WORD TABLE STYLING
+-------------------------------------------------------------------------
+    - All text: Times New Roman, 12pt.
+    - First row of each finding table (Finding ID / Finding title):
+      standard blue shading (#0070C0), white font, bold.
+    - Risk Level VALUE cell: shaded according to its risk level
+      (Critical=#FF0000, High=#F4B083, Medium=#FFFF00, Low=#00FFFF,
+      OFI=#92D050).
+    - All other cells: no fill (transparent / white background).
+
+-------------------------------------------------------------------------
 USAGE
 -------------------------------------------------------------------------
     python excel_to_word_findings.py input.xlsx
@@ -76,10 +87,9 @@ import openpyxl
 from bs4 import BeautifulSoup
 from docx import Document
 from docx.enum.table import WD_ALIGN_VERTICAL
-from docx.enum.text import WD_ALIGN_PARAGRAPH
 from docx.oxml import OxmlElement
 from docx.oxml.ns import qn
-from docx.shared import Cm, Pt
+from docx.shared import Cm, Pt, RGBColor
 from openpyxl.worksheet.worksheet import Worksheet
 
 # =============================================================================
@@ -100,7 +110,20 @@ VERIFICATION_PREFIXES = (
     "accepted",
 )
 
-FONT_NAME = "Arial"
+# ---- Styling ----
+FONT_NAME = "Times New Roman"
+FONT_SIZE = 12
+
+HEADER_ROW_FILL = "0070C0"     # standard blue
+HEADER_ROW_FONT_COLOR = RGBColor(0xFF, 0xFF, 0xFF)  # white
+
+RISK_LEVEL_COLORS = {
+    "critical": "FF0000",
+    "high": "F4B083",
+    "medium": "FFFF00",
+    "low": "00FFFF",
+    "ofi": "92D050",
+}
 
 WARNINGS: list[str] = []
 
@@ -498,24 +521,36 @@ LABEL_COL_WIDTH = Cm(4.2)
 VALUE_COL_WIDTH = Cm(12.8)
 
 
-def _set_cell_shading(cell, hex_color: str) -> None:
-    shd = OxmlElement("w:shd")
-    shd.set(qn("w:val"), "clear")
-    shd.set(qn("w:color"), "auto")
-    shd.set(qn("w:fill"), hex_color)
-    cell._tc.get_or_add_tcPr().append(shd)
+def _set_cell_fill(cell, hex_color: Optional[str]) -> None:
+    """Set the cell background fill. Pass hex_color=None for 'no fill'
+    (transparent / default white background)."""
+    tcPr = cell._tc.get_or_add_tcPr()
+    # Remove any existing shading element first
+    for existing in tcPr.findall(qn("w:shd")):
+        tcPr.remove(existing)
+
+    if hex_color is None:
+        shd = OxmlElement("w:shd")
+        shd.set(qn("w:val"), "clear")
+        shd.set(qn("w:color"), "auto")
+        shd.set(qn("w:fill"), "auto")
+        tcPr.append(shd)
+    else:
+        shd = OxmlElement("w:shd")
+        shd.set(qn("w:val"), "clear")
+        shd.set(qn("w:color"), "auto")
+        shd.set(qn("w:fill"), hex_color)
+        tcPr.append(shd)
 
 
-def _style_cell_font(cell, bold: bool = False, size: int = 10) -> None:
-    for paragraph in cell.paragraphs:
-        for run in paragraph.runs:
-            run.font.name = FONT_NAME
-            run.font.size = Pt(size)
-            run.font.bold = bold
-
-
-def _set_cell_text(cell, paragraphs: list[str], bold: bool = False, size: int = 10) -> None:
-    """Write one or more paragraphs of text into a table cell."""
+def _set_cell_text(
+    cell,
+    paragraphs: list[str],
+    bold: bool = False,
+    font_color: Optional[RGBColor] = None,
+) -> None:
+    """Write one or more paragraphs of text into a table cell, applying the
+    document-wide font (Times New Roman, 12pt)."""
     if not paragraphs:
         paragraphs = [""]
     cell.text = ""  # clear default empty paragraph's placeholder run
@@ -525,9 +560,11 @@ def _set_cell_text(cell, paragraphs: list[str], bold: bool = False, size: int = 
         first = False
         run = p.add_run(text)
         run.font.name = FONT_NAME
-        run.font.size = Pt(size)
+        run.font.size = Pt(FONT_SIZE)
         run.font.bold = bold
-        p.paragraph_format.space_after = Pt(6)
+        if font_color is not None:
+            run.font.color.rgb = font_color
+        p.paragraph_format.space_after = Pt(0)
 
 
 def add_finding_table(document: Document, finding: Finding) -> None:
@@ -552,13 +589,31 @@ def add_finding_table(document: Document, finding: Finding) -> None:
         (finding.verification_date_label, [finding.verification_status]),
     ]
 
+    RISK_LEVEL_ROW_INDEX = 2
+
     for i, (label, value_paragraphs) in enumerate(rows_content):
         row = table.rows[i]
-        _set_cell_text(row.cells[0], [label], bold=True, size=10)
-        _set_cell_text(row.cells[1], value_paragraphs, bold=(i == 0), size=10)
-        _set_cell_shading(row.cells[0], "D9E2F3")
-        row.cells[0].vertical_alignment = WD_ALIGN_VERTICAL.CENTER
-        row.cells[1].vertical_alignment = WD_ALIGN_VERTICAL.CENTER
+        label_cell, value_cell = row.cells[0], row.cells[1]
+
+        if i == 0:
+            # First row: standard blue shading, white bold font (both cells)
+            _set_cell_text(label_cell, [label], bold=True, font_color=HEADER_ROW_FONT_COLOR)
+            _set_cell_text(value_cell, value_paragraphs, bold=True, font_color=HEADER_ROW_FONT_COLOR)
+            _set_cell_fill(label_cell, HEADER_ROW_FILL)
+            _set_cell_fill(value_cell, HEADER_ROW_FILL)
+        else:
+            _set_cell_text(label_cell, [label], bold=False)
+            _set_cell_text(value_cell, value_paragraphs, bold=False)
+            _set_cell_fill(label_cell, None)  # no fill
+
+            if i == RISK_LEVEL_ROW_INDEX:
+                risk_hex = RISK_LEVEL_COLORS.get(normalize(finding.risk_level))
+                _set_cell_fill(value_cell, risk_hex)  # None if unrecognized -> no fill
+            else:
+                _set_cell_fill(value_cell, None)  # no fill
+
+        label_cell.vertical_alignment = WD_ALIGN_VERTICAL.TOP
+        value_cell.vertical_alignment = WD_ALIGN_VERTICAL.TOP
 
 
 def build_document(groups: list[tuple[Optional[str], list[Finding]]], title: str) -> Document:
@@ -572,7 +627,15 @@ def build_document(groups: list[tuple[Optional[str], list[Finding]]], title: str
 
     style = document.styles["Normal"]
     style.font.name = FONT_NAME
-    style.font.size = Pt(10)
+    style.font.size = Pt(FONT_SIZE)
+
+    # Apply the same font/size to heading styles too, so ALL text in the
+    # document (including section headings) uses Times New Roman 12pt.
+    for heading_style_id in ("Heading 1", "Heading 2"):
+        if heading_style_id in document.styles:
+            hstyle = document.styles[heading_style_id]
+            hstyle.font.name = FONT_NAME
+            hstyle.font.size = Pt(FONT_SIZE)
 
     document.add_heading(title, level=1)
 
