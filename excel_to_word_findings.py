@@ -45,8 +45,15 @@ The script warns (stderr) - but does NOT fail - on unexpected values for:
     - Risk Level     : Critical / High / Medium / Low / OFI
     - Impact         : Critical / High / Medium / Low / Very Low
     - Likelihood     : High / Medium / Low / Very Low
-    - Verification   : must START WITH one of Completed / Partially
-                        completed / Incomplete / Scheduled / Accepted
+    - Verification   : the cell value must BEGIN WITH (case-insensitive) one
+                        of: Completed / Partially Completed / Incomplete /
+                        Scheduled / Accepted. If it does, the output value
+                        is NORMALIZED to just that canonical label (the rest
+                        of the cell's text, e.g. "Completed. Vendor added a
+                        strict allow-list." -> "Completed", is dropped from
+                        the Word table). If no match is found, a warning is
+                        raised and the ORIGINAL (un-normalized) text is kept
+                        in the output so nothing is silently lost.
 All warnings are also collected and summarized at the end of the run.
 
 -------------------------------------------------------------------------
@@ -107,12 +114,23 @@ DEFAULT_SHEET_INDEX_FALLBACK = 2  # zero-based -> 3rd sheet
 RISK_LEVELS = {"critical", "high", "medium", "low", "ofi"}
 IMPACT_LEVELS = {"critical", "high", "medium", "low", "very low"}
 LIKELIHOOD_LEVELS = {"high", "medium", "low", "very low"}
-VERIFICATION_PREFIXES = (
-    "completed",
-    "partially completed",
-    "incomplete",
-    "scheduled",
-    "accepted",
+
+# Canonical verification status labels (output values). The source cell text
+# only needs to START WITH one of these (case-insensitive) - any trailing
+# text (e.g. explanatory notes) is dropped from the Word output.
+VERIFICATION_CANONICAL_LABELS = [
+    "Completed",
+    "Partially Completed",
+    "Incomplete",
+    "Scheduled",
+    "Accepted",
+]
+# Sort longest-first so "Partially Completed" is checked before "Completed"
+# would otherwise never incorrectly match as a prefix of it (they don't
+# overlap as prefixes of one another, but this keeps matching unambiguous
+# and future-proof if labels are edited).
+_VERIFICATION_MATCH_ORDER = sorted(
+    VERIFICATION_CANONICAL_LABELS, key=len, reverse=True
 )
 
 # ---- Styling ----
@@ -269,6 +287,28 @@ def normalize(s) -> str:
     return re.sub(r"\s+", " ", str(s or "")).strip().lower()
 
 
+def normalize_verification_status(value: str) -> tuple[str, bool]:
+    """Match `value` against the canonical verification labels as a
+    case-insensitive PREFIX match. Returns (output_value, matched):
+        - If a canonical label matches as a prefix, returns
+          (canonical_label, True) - trailing text (e.g. explanatory notes)
+          is dropped.
+        - If no canonical label matches, returns (original_value, False) so
+          the original text is preserved in the output (nothing is silently
+          lost) and the caller can raise a warning.
+        - Empty input returns ("", True) - no warning for blank cells.
+    """
+    if not value:
+        return "", True
+
+    norm_value = normalize(value)
+    for label in _VERIFICATION_MATCH_ORDER:
+        if norm_value.startswith(label.lower()):
+            return label, True
+
+    return value, False
+
+
 # =============================================================================
 # Step 3: header mapping
 # =============================================================================
@@ -422,15 +462,6 @@ def validate_likelihood(value: str, finding_id: str, row: int) -> None:
         )
 
 
-def validate_verification(value: str, finding_id: str, row: int) -> None:
-    if value and not normalize(value).startswith(VERIFICATION_PREFIXES):
-        warn(
-            f'Row {row} (Finding "{finding_id}"): unexpected verification '
-            f'status "{value}". Expected it to start with one of '
-            f"{VERIFICATION_PREFIXES}."
-        )
-
-
 def extract_findings(
     ws: Worksheet, hmap: HeaderMap, header_row: int, min_col: int, max_col: int, max_row: int
 ) -> list[tuple[Optional[str], list[Finding]]]:
@@ -475,13 +506,23 @@ def extract_findings(
         recommended_safeguards = split_paragraphs(ws.cell(row=row, column=hmap.recommended_safeguards_col).value) if hmap.recommended_safeguards_col else []
 
         # Verification: take the LAST non-empty column, left-to-right.
-        verification_status = ""
+        verification_raw = ""
         verification_header = ""
         for col, header_text in hmap.verification_cols:
             val = get_val(ws, row, col)
             if val:
-                verification_status = val
+                verification_raw = val
                 verification_header = header_text
+
+        # Normalize to one of the 5 canonical labels (prefix match), dropping
+        # any trailing explanatory text. Warn if nothing matches.
+        verification_status, matched = normalize_verification_status(verification_raw)
+        if not matched:
+            warn(
+                f'Row {row} (Finding "{finding_id}"): unexpected verification '
+                f'status "{verification_raw}". Expected it to start with one '
+                f"of {VERIFICATION_CANONICAL_LABELS} (case-insensitive)."
+            )
 
         date_str = extract_date(verification_header) if verification_header else None
         if date_str:
@@ -494,7 +535,6 @@ def extract_findings(
         validate_risk_level(risk_level, finding_id, row)
         validate_impact(impact, finding_id, row)
         validate_likelihood(likelihood, finding_id, row)
-        validate_verification(verification_status, finding_id, row)
 
         current_findings.append(
             Finding(
