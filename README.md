@@ -46,10 +46,10 @@ pip install -r requirements.txt
 ## Usage
 
 ```sh
-python3 excel_to_word_findings.py path/to/input.xlsx
-python3 excel_to_word_findings.py path/to/input.xlsx output.docx
-python3 excel_to_word_findings.py path/to/input.xlsx --sheet "Follow-up Items"
-python3 excel_to_word_findings.py path/to/input.xlsx --debug
+python3 excel_to_word_findings.py path/to/follow-up-plan.xlsx
+python3 excel_to_word_findings.py path/to/follow-up-plan.xlsx output-table.docx
+python3 excel_to_word_findings.py path/to/follow-up-plan.xlsx --sheet "Follow-up Items"
+python3 excel_to_word_findings.py path/to/follow-up-plan.xlsx --debug
 ```
 
 If you're too lazy to type the full path to your Excel file,
