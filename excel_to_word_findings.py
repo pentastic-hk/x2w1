@@ -44,9 +44,13 @@ HOW IT LOCATES THE DATA
                                          (rightmost non-empty per row wins)
    Any other column immediately to the left of the first "Verification*"
    column is treated as the (unused-in-output) Vendor Response column.
-4. Rows that are fully merged across the table width are treated as SECTION
-   HEADER rows (e.g. "General Control Review", "Penetration Testing") and
-   are rendered as Word Heading 2 paragraphs instead of finding tables.
+4. Rows where at least the first 6 columns of the table are merged into one
+   cell are treated as SECTION HEADER rows (e.g. "General Control Review",
+   "Vulnerability Scanning", "Web Penetration Testing") and are rendered as
+   Word Heading 2 paragraphs instead of finding tables. The merge does not
+   need to span the entire table width - only the first 6 columns (a merge
+   spanning the FULL table width also still counts, since it necessarily
+   covers at least the first 6 columns too).
 5. Every other non-blank row within the bounding box is treated as a single
    finding and validated + rendered as its own 2-column Word table.
 
@@ -466,18 +470,28 @@ def map_headers(ws: Worksheet, header_row: int, min_col: int, max_col: int) -> H
 
 
 # =============================================================================
-# Section header row detection (fully merged rows, e.g. "Penetration Testing")
+# Section header row detection (rows with at least the first 6 columns
+# merged, e.g. "Penetration Testing")
 # =============================================================================
+
+SECTION_HEADER_MIN_MERGED_COLS = 6
 
 
 def section_title_for_row(ws: Worksheet, row: int, min_col: int, max_col: int) -> Optional[str]:
     width = max_col - min_col + 1
+    # A table narrower than the usual minimum can never satisfy the "first 6
+    # columns merged" rule, so fall back to requiring the full width instead.
+    required_merged_cols = min(SECTION_HEADER_MIN_MERGED_COLS, width)
+
     for mc in ws.merged_cells.ranges:
         if mc.min_row == row and mc.max_row == row:
             covered = mc.max_col - mc.min_col + 1
-            # Treat as a section header if the merge spans (almost) the
-            # whole width of the table.
-            if mc.min_col <= min_col + 1 and covered >= width - 1:
+            # Treat as a section header if the merge starts at (or right at)
+            # the leftmost column of the table AND spans at least the first
+            # 6 columns (rather than requiring the entire row to be merged).
+            # A row merged across the FULL table width also satisfies this,
+            # since it necessarily covers at least the first 6 columns too.
+            if mc.min_col <= min_col + 1 and covered >= required_merged_cols:
                 anchor = ws.cell(row=mc.min_row, column=mc.min_col).value
                 return clean_text(anchor)
     return None
