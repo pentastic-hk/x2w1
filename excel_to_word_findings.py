@@ -75,7 +75,8 @@ All warnings are also collected and summarized at the end of the run.
 -------------------------------------------------------------------------
 WORD TABLE STYLING - "portrait-detail" format
 -------------------------------------------------------------------------
-    - All text: Times New Roman, 12pt.
+    - All text (including section headings): Times New Roman, 12pt, black
+      (Automatic) font color.
     - All cell content is top-aligned (vertically) and has no extra spacing
       between wrapped paragraphs within a cell.
     - First row of each finding table (Finding ID / Finding title):
@@ -92,8 +93,9 @@ WORD TABLE STYLING - "portrait-detail" format
 WORD TABLE STYLING - "landscape-detail" format
 -------------------------------------------------------------------------
     - Page: A4, landscape orientation.
-    - All text: Times New Roman, 12pt (including section headings and the
-      "The following issues are identified:" intro paragraph).
+    - All text (including section headings and the "The following issues
+      are identified:" intro paragraph): Times New Roman, 12pt, black
+      (Automatic) font color.
     - Each section becomes its own bold heading, auto-numbered as
       "<section-number>.<n> <Section Title>" (e.g. "9.1 General Control
       Review"), followed by one summary table for that section's findings.
@@ -836,28 +838,89 @@ def _add_blank_separator_paragraph(document: Document):
     return p
 
 
+def _hard_set_style_font(style, name: str = FONT_NAME, size_pt: int = FONT_SIZE) -> None:
+    """Force a paragraph style's run properties (rPr) to an EXPLICIT font
+    name/size/color, fully overriding Word's built-in theme-based styling.
+
+    This is needed because Word's default "Heading 1"/"Heading 2" styles
+    (and similar) don't just set a plain font name/size/color - they
+    reference the document THEME instead:
+        <w:rFonts w:asciiTheme="majorHAnsi" w:eastAsiaTheme="majorEastAsia"
+                  w:hAnsiTheme="majorHAnsi" w:cstheme="majorBidi"/>
+        <w:color w:val="365F91" w:themeColor="accent1" w:themeShade="BF"/>
+
+    Simply setting `style.font.name = ...` (as python-docx's high-level API
+    does) only ADDS explicit w:ascii/w:hAnsi attributes - it does NOT
+    remove the w:asciiTheme/w:hAnsiTheme/etc. attributes already present.
+    When both explicit and theme font references coexist, some renderers
+    (observed with LibreOffice) still preferred the THEME font over the
+    explicit one, so headings kept rendering in the theme's sans-serif
+    heading font (and theme accent color) instead of Times New Roman
+    black/auto. This function removes ALL theme references and writes
+    fully explicit values so there's no ambiguity for any renderer.
+    """
+    # Set the size color etc via the standard python-docx API first (keeps
+    # everything consistent / handles version differences gracefully).
+    style.font.name = name
+    style.font.size = Pt(size_pt)
+
+    rPr = style.element.get_or_add_rPr()
+
+    # ---- Fonts: remove theme references, set every font slot explicitly ----
+    rFonts = rPr.find(qn("w:rFonts"))
+    if rFonts is None:
+        rFonts = OxmlElement("w:rFonts")
+        rPr.insert(0, rFonts)
+    for theme_attr in ("w:asciiTheme", "w:hAnsiTheme", "w:eastAsiaTheme", "w:cstheme"):
+        if rFonts.get(qn(theme_attr)) is not None:
+            del rFonts.attrib[qn(theme_attr)]
+    rFonts.set(qn("w:ascii"), name)
+    rFonts.set(qn("w:hAnsi"), name)
+    rFonts.set(qn("w:eastAsia"), name)
+    rFonts.set(qn("w:cs"), name)
+
+    # ---- Size: also fix complex-script size (szCs), which python-docx's
+    # high-level API does NOT update, to keep it consistent with sz. ----
+    szCs = rPr.find(qn("w:szCs"))
+    if szCs is None:
+        szCs = OxmlElement("w:szCs")
+        rPr.append(szCs)
+    szCs.set(qn("w:val"), str(size_pt * 2))
+
+    # ---- Color: force to "auto" (Word's "Automatic" color, renders as
+    # black), removing any themeColor/themeTint/themeShade references. ----
+    color = rPr.find(qn("w:color"))
+    if color is None:
+        color = OxmlElement("w:color")
+        rPr.append(color)
+    for theme_attr in ("w:themeColor", "w:themeTint", "w:themeShade"):
+        if color.get(qn(theme_attr)) is not None:
+            del color.attrib[qn(theme_attr)]
+    color.set(qn("w:val"), "auto")
+
+
 def _apply_base_styles(document: Document) -> None:
     """Shared styling setup used by BOTH output formats: fixes the OOXML
-    <w:zoom> validation issue, and forces Times New Roman 12pt across the
-    Normal style AND the Heading 1/2 styles, so ALL text in the document
-    (body text and headings alike) uses the same font/size."""
+    <w:zoom> validation issue, and forces Times New Roman 12pt, black
+    (Automatic) font color across the Normal style AND the Heading 1/2
+    styles, so ALL text in the document (body text and headings alike)
+    uses the same font/size/color - overriding Word's theme-based heading
+    defaults (see _hard_set_style_font for why this requires more than
+    just setting .font.name/.font.size)."""
     # python-docx's default template omits the required w:percent attribute
     # on <w:zoom>; add it so the resulting file passes strict OOXML validation.
     zoom = document.settings.element.find(qn("w:zoom"))
     if zoom is not None:
         zoom.set(qn("w:percent"), "100")
 
+    _hard_set_style_font(document.styles["Normal"], FONT_NAME, FONT_SIZE)
     style = document.styles["Normal"]
-    style.font.name = FONT_NAME
-    style.font.size = Pt(FONT_SIZE)
     style.paragraph_format.space_before = Pt(0)
     style.paragraph_format.space_after = Pt(0)
 
     for heading_style_id in ("Heading 1", "Heading 2"):
         if heading_style_id in document.styles:
-            hstyle = document.styles[heading_style_id]
-            hstyle.font.name = FONT_NAME
-            hstyle.font.size = Pt(FONT_SIZE)
+            _hard_set_style_font(document.styles[heading_style_id], FONT_NAME, FONT_SIZE)
 
 
 def build_document(groups: list[tuple[Optional[str], list[Finding]]], title: str) -> Document:
