@@ -5,8 +5,8 @@ excel_to_word_findings.py
 
 Convert a cybersecurity "Follow-up Plan" Excel workbook into a formal Word
 report. The SAME data-extraction logic (locating the sheet/table, mapping
-columns, validating values, grouping by section) is shared across TWO output
-FORMATS, selected via --format:
+columns, validating values, grouping by section) is shared across THREE
+output FORMATS, selected via --format:
 
     - "portrait-detail" (default): A4 portrait. Renders ONE 2-column Word
       table PER FINDING (General Control Review, Vulnerability Scanning,
@@ -18,6 +18,11 @@ FORMATS, selected via --format:
       Scanning", ...), with one row per finding and columns for #, Findings,
       Affected, Risk Description, Risk Level, Impact / Likelihood,
       Recommendation, and Rectification Status.
+
+    - "veri-summary-by-section": A4 portrait. Renders ONE small summary
+      table PER SECTION, counting the number of findings by Risk Level x
+      Rectification (verification) Status - i.e. a "Verification Summary
+      per Section" table, matching the sample layout provided by the user.
 
 -------------------------------------------------------------------------
 HOW IT LOCATES THE DATA
@@ -115,6 +120,34 @@ WORD TABLE STYLING - "landscape-detail" format
       bold).
 
 -------------------------------------------------------------------------
+WORD TABLE STYLING - "veri-summary-by-section" format
+-------------------------------------------------------------------------
+    - Page: A4, portrait orientation.
+    - All text: Times New Roman, 12pt, black (Automatic) font color.
+    - ONE compact summary table PER SECTION (e.g. "Security Risk Assessment
+      - General Control Review"), each with:
+        - Row 1 (full-width, merged): section title, standard blue shading
+          (#0070C0), white bold font.
+        - Rows 2-3 (header block): "Risk Level" (merged vertically across
+          both rows) | blank/"Total" | "Number of items by Rectification
+          Status" (merged horizontally across the status columns) with the
+          individual status column names below it. Same blue/white/bold
+          styling as row 1. "Repeat Header Rows" enabled for rows 1-3.
+        - One row per Risk Level (Critical [only if used anywhere in the
+          workbook] / High / Medium / Low / OFI - the last 4 are ALWAYS
+          shown, even with all-zero counts): risk level name is BOLD and
+          shaded using the EXACT SAME color scheme as the other two formats
+          (Critical=#FF0000, High=#F4B083, Medium=#FFFF00, Low=#00FFFF,
+          OFI=#92D050); count cells are plain (not bold), no fill.
+        - Final "Total" row: label not bold; all count cells bold; no fill.
+    - Columns: Risk Level, Total, Completed, Partially Completed [only if
+      used anywhere in the workbook], Incomplete, Scheduled, Accepted.
+    - Whether the "Critical" row and "Partially Completed" column appear is
+      decided ONCE, globally, across ALL findings in the workbook (not
+      per-section) so every section's table has an identical, consistent
+      shape.
+
+-------------------------------------------------------------------------
 USAGE
 -------------------------------------------------------------------------
     python excel_to_word_findings.py input.xlsx
@@ -122,17 +155,19 @@ USAGE
     python excel_to_word_findings.py input.xlsx --sheet "Follow-up Items"
     python excel_to_word_findings.py input.xlsx --format landscape-detail
     python excel_to_word_findings.py input.xlsx --format landscape-detail --section-number 9
+    python excel_to_word_findings.py input.xlsx --format veri-summary-by-section
     python excel_to_word_findings.py input.xlsx --debug
 
 --format accepts a string enum (not a boolean), so more formats can be
 added later without breaking the CLI:
-    - "portrait-detail"  (default) - one detailed table per finding, A4 portrait.
-    - "landscape-detail" - one summary table per section, A4 landscape.
+    - "portrait-detail"          (default) - one detailed table per finding, A4 portrait.
+    - "landscape-detail"         - one summary table per section, A4 landscape.
+    - "veri-summary-by-section"  - one verification-status-count table per section, A4 portrait.
 
 --section-number sets the base report section number used to auto-number
 section headings in "landscape-detail" (default: "9", producing "9.1",
 "9.2", "9.3", ... in the order sections appear in the workbook). Ignored
-for "portrait-detail".
+for "portrait-detail" and "veri-summary-by-section".
 
 Manual overrides (use if auto-detection of the table picks the wrong
 region - e.g. if other bordered cells exist elsewhere on the sheet):
@@ -170,7 +205,8 @@ DEFAULT_SHEET_INDEX_FALLBACK = 2  # zero-based -> 3rd sheet
 # added later without changing the CLI shape).
 FORMAT_PORTRAIT_DETAIL = "portrait-detail"
 FORMAT_LANDSCAPE_DETAIL = "landscape-detail"
-OUTPUT_FORMATS = [FORMAT_PORTRAIT_DETAIL, FORMAT_LANDSCAPE_DETAIL]
+FORMAT_VERI_SUMMARY_BY_SECTION = "veri-summary-by-section"
+OUTPUT_FORMATS = [FORMAT_PORTRAIT_DETAIL, FORMAT_LANDSCAPE_DETAIL, FORMAT_VERI_SUMMARY_BY_SECTION]
 DEFAULT_OUTPUT_FORMAT = FORMAT_PORTRAIT_DETAIL
 
 DEFAULT_SECTION_NUMBER = "9"
@@ -210,6 +246,16 @@ RISK_LEVEL_COLORS = {
     "medium": "FFFF00",
     "low": "00FFFF",
     "ofi": "92D050",
+}
+
+# Display order/labels for risk levels, shared by every format that breaks
+# counts down by risk level.
+RISK_LEVEL_DISPLAY = {
+    "critical": "Critical",
+    "high": "High",
+    "medium": "Medium",
+    "low": "Low",
+    "ofi": "OFI",
 }
 
 WARNINGS: list[str] = []
@@ -686,7 +732,7 @@ def group_verification_status_label(findings: list[Finding], hmap: HeaderMap) ->
 
 
 # =============================================================================
-# Step 5: build the Word document
+# Shared Word-building helpers (used by ALL formats)
 # =============================================================================
 
 LABEL_COL_WIDTH = Cm(4.2)
@@ -779,52 +825,6 @@ def _set_cell_text(
         p.paragraph_format.space_before = Pt(0)
 
 
-def add_finding_table(document: Document, finding: Finding) -> None:
-    table = document.add_table(rows=10, cols=2)
-    table.style = "Table Grid"
-    table.autofit = False
-    _set_table_column_widths(table, [LABEL_COL_WIDTH, VALUE_COL_WIDTH])
-
-    rows_content = [
-        (finding.finding_id, [finding.finding_title]),
-        ("Risk Description", finding.risk_description),
-        ("Risk Level", [finding.risk_level]),
-        ("Impact/Likelihood", [f"{finding.impact} / {finding.likelihood}" if (finding.impact or finding.likelihood) else ""]),
-        ("OWASP Top 10", [""]),
-        ("Affected Asset", [finding.affected]),
-        ("Evidence for the finding", [""]),
-        ("Recommended Safeguards", finding.recommended_safeguards),
-        ("Evidence for the remedial actions", [""]),
-        (finding.verification_date_label, [finding.verification_status]),
-    ]
-
-    RISK_LEVEL_ROW_INDEX = 2
-
-    for i, (label, value_paragraphs) in enumerate(rows_content):
-        row = table.rows[i]
-        label_cell, value_cell = row.cells[0], row.cells[1]
-
-        if i == 0:
-            # First row: standard blue shading, white bold font (both cells)
-            _set_cell_text(label_cell, [label], bold=True, font_color=HEADER_ROW_FONT_COLOR)
-            _set_cell_text(value_cell, value_paragraphs, bold=True, font_color=HEADER_ROW_FONT_COLOR)
-            _set_cell_fill(label_cell, HEADER_ROW_FILL)
-            _set_cell_fill(value_cell, HEADER_ROW_FILL)
-        else:
-            _set_cell_text(label_cell, [label], bold=False)
-            _set_cell_text(value_cell, value_paragraphs, bold=False)
-            _set_cell_fill(label_cell, None)  # no fill
-
-            if i == RISK_LEVEL_ROW_INDEX:
-                risk_hex = RISK_LEVEL_COLORS.get(normalize(finding.risk_level))
-                _set_cell_fill(value_cell, risk_hex)  # None if unrecognized -> no fill
-            else:
-                _set_cell_fill(value_cell, None)  # no fill
-
-        label_cell.vertical_alignment = WD_ALIGN_VERTICAL.TOP
-        value_cell.vertical_alignment = WD_ALIGN_VERTICAL.TOP
-
-
 def _add_blank_separator_paragraph(document: Document):
     """Add a blank paragraph used purely as vertical whitespace between
     tables, with all paragraph spacing zeroed out so it doesn't introduce
@@ -836,6 +836,15 @@ def _add_blank_separator_paragraph(document: Document):
         run.font.name = FONT_NAME
         run.font.size = Pt(FONT_SIZE)
     return p
+
+
+def _set_repeat_header_row(row) -> None:
+    """Mark a table row as a repeating header row (OOXML <w:tblHeader/>),
+    so it repeats at the top of every page the table spans."""
+    trPr = row._tr.get_or_add_trPr()
+    tbl_header = OxmlElement("w:tblHeader")
+    tbl_header.set(qn("w:val"), "true")
+    trPr.append(tbl_header)
 
 
 def _hard_set_style_font(style, name: str = FONT_NAME, size_pt: int = FONT_SIZE) -> None:
@@ -900,7 +909,7 @@ def _hard_set_style_font(style, name: str = FONT_NAME, size_pt: int = FONT_SIZE)
 
 
 def _apply_base_styles(document: Document) -> None:
-    """Shared styling setup used by BOTH output formats: fixes the OOXML
+    """Shared styling setup used by ALL output formats: fixes the OOXML
     <w:zoom> validation issue, and forces Times New Roman 12pt, black
     (Automatic) font color across the Normal style AND the Heading 1/2
     styles, so ALL text in the document (body text and headings alike)
@@ -921,6 +930,57 @@ def _apply_base_styles(document: Document) -> None:
     for heading_style_id in ("Heading 1", "Heading 2"):
         if heading_style_id in document.styles:
             _hard_set_style_font(document.styles[heading_style_id], FONT_NAME, FONT_SIZE)
+
+
+# =============================================================================
+# "portrait-detail" format: one detailed table per finding, A4 portrait
+# =============================================================================
+
+
+def add_finding_table(document: Document, finding: Finding) -> None:
+    table = document.add_table(rows=10, cols=2)
+    table.style = "Table Grid"
+    table.autofit = False
+    _set_table_column_widths(table, [LABEL_COL_WIDTH, VALUE_COL_WIDTH])
+
+    rows_content = [
+        (finding.finding_id, [finding.finding_title]),
+        ("Risk Description", finding.risk_description),
+        ("Risk Level", [finding.risk_level]),
+        ("Impact/Likelihood", [f"{finding.impact} / {finding.likelihood}" if (finding.impact or finding.likelihood) else ""]),
+        ("OWASP Top 10", [""]),
+        ("Affected Asset", [finding.affected]),
+        ("Evidence for the finding", [""]),
+        ("Recommended Safeguards", finding.recommended_safeguards),
+        ("Evidence for the remedial actions", [""]),
+        (finding.verification_date_label, [finding.verification_status]),
+    ]
+
+    RISK_LEVEL_ROW_INDEX = 2
+
+    for i, (label, value_paragraphs) in enumerate(rows_content):
+        row = table.rows[i]
+        label_cell, value_cell = row.cells[0], row.cells[1]
+
+        if i == 0:
+            # First row: standard blue shading, white bold font (both cells)
+            _set_cell_text(label_cell, [label], bold=True, font_color=HEADER_ROW_FONT_COLOR)
+            _set_cell_text(value_cell, value_paragraphs, bold=True, font_color=HEADER_ROW_FONT_COLOR)
+            _set_cell_fill(label_cell, HEADER_ROW_FILL)
+            _set_cell_fill(value_cell, HEADER_ROW_FILL)
+        else:
+            _set_cell_text(label_cell, [label], bold=False)
+            _set_cell_text(value_cell, value_paragraphs, bold=False)
+            _set_cell_fill(label_cell, None)  # no fill
+
+            if i == RISK_LEVEL_ROW_INDEX:
+                risk_hex = RISK_LEVEL_COLORS.get(normalize(finding.risk_level))
+                _set_cell_fill(value_cell, risk_hex)  # None if unrecognized -> no fill
+            else:
+                _set_cell_fill(value_cell, None)  # no fill
+
+        label_cell.vertical_alignment = WD_ALIGN_VERTICAL.TOP
+        value_cell.vertical_alignment = WD_ALIGN_VERTICAL.TOP
 
 
 def build_document(groups: list[tuple[Optional[str], list[Finding]]], title: str) -> Document:
@@ -983,15 +1043,6 @@ def _setup_a4_landscape(document: Document) -> None:
     section.right_margin = Cm(1.5)
     section.top_margin = Cm(2.0)
     section.bottom_margin = Cm(2.0)
-
-
-def _set_repeat_header_row(row) -> None:
-    """Mark a table row as a repeating header row (OOXML <w:tblHeader/>),
-    so it repeats at the top of every page the table spans."""
-    trPr = row._tr.get_or_add_trPr()
-    tbl_header = OxmlElement("w:tblHeader")
-    tbl_header.set(qn("w:val"), "true")
-    trPr.append(tbl_header)
 
 
 def _lines_from_text(text: str) -> list[str]:
@@ -1112,6 +1163,245 @@ def build_landscape_document(
 
 
 # =============================================================================
+# "veri-summary-by-section" format: one verification-status-count table per
+# section, A4 portrait ("Verification Summary per Section")
+# =============================================================================
+
+# Base (always-shown) risk levels, in display order. "critical" is inserted
+# at the front of this list at render time ONLY if used anywhere in the
+# workbook (see compute_veri_summary_flags()).
+_VERI_SUMMARY_BASE_RISK_LEVELS = ["high", "medium", "low", "ofi"]
+
+# Base (always-shown) status columns, in display order. "Partially Completed"
+# is inserted between "Completed" and "Incomplete" ONLY if used anywhere in
+# the workbook (see compute_veri_summary_flags()).
+_VERI_SUMMARY_BASE_STATUS_COLUMNS = ["Completed", "Incomplete", "Scheduled", "Accepted"]
+
+# (label, width) for the two always-present leading columns.
+VERI_SUMMARY_LEADING_COLUMNS = [
+    ("Risk Level", Cm(2.6)),
+    ("Total", Cm(1.6)),
+]
+# width used for EVERY status column (Completed/Partially Completed/
+# Incomplete/Scheduled/Accepted) - kept uniform for a clean grid, wide
+# enough that "Incomplete"/"Partially Completed" (the two longest labels)
+# don't wrap awkwardly mid-word.
+VERI_SUMMARY_STATUS_COL_WIDTH = Cm(2.6)
+
+
+def _setup_a4_portrait(document: Document) -> None:
+    """Configure the document's first section as A4, portrait orientation."""
+    section = document.sections[0]
+    section.orientation = WD_ORIENT.PORTRAIT
+    section.page_width = Mm(210)
+    section.page_height = Mm(297)
+    section.left_margin = Cm(1.5)
+    section.right_margin = Cm(1.5)
+    section.top_margin = Cm(2.0)
+    section.bottom_margin = Cm(2.0)
+
+
+def compute_veri_summary_flags(groups: list[tuple[Optional[str], list[Finding]]]) -> tuple[bool, bool]:
+    """Scan ALL findings across ALL sections (globally, not per-section) to
+    decide once, for the WHOLE document:
+        - has_critical: whether the "Critical" risk-level row should be
+          shown (above "High") in every section's table.
+        - has_partial: whether the "Partially Completed" status column
+          should be shown (between "Completed" and "Incomplete") in every
+          section's table.
+    Deciding this globally (rather than per-section) keeps every section's
+    table the same shape, which is the cleanest layout for a multi-section
+    report."""
+    has_critical = False
+    has_partial = False
+    for _, findings in groups:
+        for f in findings:
+            if normalize(f.risk_level) == "critical":
+                has_critical = True
+            if f.verification_status == "Partially Completed":
+                has_partial = True
+    return has_critical, has_partial
+
+
+def _veri_summary_risk_levels(has_critical: bool) -> list[str]:
+    return (["critical"] if has_critical else []) + _VERI_SUMMARY_BASE_RISK_LEVELS
+
+
+def _veri_summary_status_columns(has_partial: bool) -> list[str]:
+    cols = list(_VERI_SUMMARY_BASE_STATUS_COLUMNS)
+    if has_partial:
+        cols.insert(1, "Partially Completed")  # between Completed and Incomplete
+    return cols
+
+
+def _count_section_by_risk_and_status(
+    findings: list[Finding], risk_levels: list[str], status_columns: list[str]
+) -> tuple[dict, dict]:
+    """Returns (counts, totals):
+        - counts[risk_level][status_column] = number of findings in this
+          section with that risk level AND that (canonical) verification
+          status.
+        - totals[risk_level] = total number of findings in this section
+          with that risk level (regardless of verification status,
+          including unmatched/invalid statuses - those are already flagged
+          via warnings elsewhere and simply don't add to any status column
+          here, but DO still count towards the risk level's Total)."""
+    counts = {rl: {col: 0 for col in status_columns} for rl in risk_levels}
+    totals = {rl: 0 for rl in risk_levels}
+
+    for f in findings:
+        rl_norm = normalize(f.risk_level)
+        if rl_norm not in risk_levels:
+            # Either an unrecognized risk level (already warned elsewhere)
+            # or - for "critical" - a level not shown because has_critical
+            # was globally False (shouldn't happen, since has_critical is
+            # computed FROM these same findings, but guarded defensively).
+            continue
+        totals[rl_norm] += 1
+        if f.verification_status in status_columns:
+            counts[rl_norm][f.verification_status] += 1
+
+    return counts, totals
+
+
+def add_veri_summary_table(
+    document: Document,
+    section_title: str,
+    findings: list[Finding],
+    risk_levels: list[str],
+    status_columns: list[str],
+) -> None:
+    """Render ONE section's "Verification Summary" table: counts of
+    findings by Risk Level x Rectification (verification) Status."""
+    counts, totals = _count_section_by_risk_and_status(findings, risk_levels, status_columns)
+
+    n_status_cols = len(status_columns)
+    n_cols = 2 + n_status_cols  # Risk Level, Total, + status columns
+    column_widths = [w for _, w in VERI_SUMMARY_LEADING_COLUMNS] + [VERI_SUMMARY_STATUS_COL_WIDTH] * n_status_cols
+
+    n_rows = 3 + len(risk_levels) + 1  # title + 2 header rows + risk rows + total row
+    table = document.add_table(rows=n_rows, cols=n_cols)
+    table.style = "Table Grid"
+    table.autofit = False
+    _set_table_column_widths(table, column_widths)
+
+    # ---- Row 0: full-width section title, blue/white/bold ----
+    title_row = table.rows[0]
+    title_cell = title_row.cells[0]
+    for c in title_row.cells[1:]:
+        title_cell = title_cell.merge(c)
+    _set_cell_text(title_cell, [f"Security Risk Assessment - {section_title}"], bold=True, font_color=HEADER_ROW_FONT_COLOR)
+    _set_cell_fill(title_cell, HEADER_ROW_FILL)
+    title_cell.vertical_alignment = WD_ALIGN_VERTICAL.TOP
+
+    # ---- Rows 1-2: header block ----
+    header_row_a = table.rows[1]
+    header_row_b = table.rows[2]
+
+    # "Risk Level" - merged vertically across both header rows.
+    risk_level_header_cell = header_row_a.cells[0].merge(header_row_b.cells[0])
+    _set_cell_text(risk_level_header_cell, ["Risk Level"], bold=True, font_color=HEADER_ROW_FONT_COLOR)
+    _set_cell_fill(risk_level_header_cell, HEADER_ROW_FILL)
+    risk_level_header_cell.vertical_alignment = WD_ALIGN_VERTICAL.TOP
+
+    # Column 1 (blank in row A, "Total" in row B) - NOT merged vertically,
+    # matching the reference sample's layout.
+    _set_cell_text(header_row_a.cells[1], [""], bold=True, font_color=HEADER_ROW_FONT_COLOR)
+    _set_cell_fill(header_row_a.cells[1], HEADER_ROW_FILL)
+    _set_cell_text(header_row_b.cells[1], ["Total"], bold=True, font_color=HEADER_ROW_FONT_COLOR)
+    _set_cell_fill(header_row_b.cells[1], HEADER_ROW_FILL)
+
+    # "Number of items by Rectification Status" - merged horizontally across
+    # all status columns, in row A only.
+    super_header_cell = header_row_a.cells[2]
+    for c in header_row_a.cells[3:]:
+        super_header_cell = super_header_cell.merge(c)
+    _set_cell_text(super_header_cell, ["Number of items by Rectification Status"], bold=True, font_color=HEADER_ROW_FONT_COLOR)
+    _set_cell_fill(super_header_cell, HEADER_ROW_FILL)
+
+    # Individual status column names in row B.
+    for i, col_name in enumerate(status_columns):
+        cell = header_row_b.cells[2 + i]
+        _set_cell_text(cell, [col_name], bold=True, font_color=HEADER_ROW_FONT_COLOR)
+        _set_cell_fill(cell, HEADER_ROW_FILL)
+        cell.vertical_alignment = WD_ALIGN_VERTICAL.TOP
+
+    for row in (title_row, header_row_a, header_row_b):
+        _set_repeat_header_row(row)
+
+    # ---- Risk-level data rows ----
+    for i, rl in enumerate(risk_levels):
+        row = table.rows[3 + i]
+        label_cell = row.cells[0]
+        _set_cell_text(label_cell, [RISK_LEVEL_DISPLAY[rl]], bold=True)
+        # Reuse the EXACT SAME risk-level color scheme as the other formats.
+        _set_cell_fill(label_cell, RISK_LEVEL_COLORS.get(rl))
+        label_cell.vertical_alignment = WD_ALIGN_VERTICAL.TOP
+
+        total_cell = row.cells[1]
+        _set_cell_text(total_cell, [str(totals[rl])], bold=False)
+        _set_cell_fill(total_cell, None)
+        total_cell.vertical_alignment = WD_ALIGN_VERTICAL.TOP
+
+        for j, col in enumerate(status_columns):
+            cell = row.cells[2 + j]
+            _set_cell_text(cell, [str(counts[rl][col])], bold=False)
+            _set_cell_fill(cell, None)
+            cell.vertical_alignment = WD_ALIGN_VERTICAL.TOP
+
+    # ---- Final "Total" row: label not bold, all counts bold ----
+    total_row = table.rows[3 + len(risk_levels)]
+    _set_cell_text(total_row.cells[0], ["Total"], bold=False)
+    _set_cell_fill(total_row.cells[0], None)
+    total_row.cells[0].vertical_alignment = WD_ALIGN_VERTICAL.TOP
+
+    grand_total = sum(totals.values())
+    cell = total_row.cells[1]
+    _set_cell_text(cell, [str(grand_total)], bold=True)
+    _set_cell_fill(cell, None)
+    cell.vertical_alignment = WD_ALIGN_VERTICAL.TOP
+
+    for j, col in enumerate(status_columns):
+        col_total = sum(counts[rl][col] for rl in risk_levels)
+        cell = total_row.cells[2 + j]
+        _set_cell_text(cell, [str(col_total)], bold=True)
+        _set_cell_fill(cell, None)
+        cell.vertical_alignment = WD_ALIGN_VERTICAL.TOP
+
+
+def build_veri_summary_document(
+    groups: list[tuple[Optional[str], list[Finding]]],
+    title: str,
+) -> Document:
+    """Build the "veri-summary-by-section" output: A4 portrait, one compact
+    Risk-Level x Rectification-Status count table PER SECTION, reusing the
+    same Finding data produced by extract_findings()."""
+    document = Document()
+    _apply_base_styles(document)
+    _setup_a4_portrait(document)
+
+    document.add_heading(title, level=1)
+
+    has_critical, has_partial = compute_veri_summary_flags(groups)
+    risk_levels = _veri_summary_risk_levels(has_critical)
+    status_columns = _veri_summary_status_columns(has_partial)
+
+    total = 0
+    for section_title, findings in groups:
+        if not findings:
+            continue
+        add_veri_summary_table(document, section_title or "Findings", findings, risk_levels, status_columns)
+        total += len(findings)
+        _add_blank_separator_paragraph(document)
+        _add_blank_separator_paragraph(document)
+
+    if total == 0:
+        warn("No findings were extracted - the output document will be empty of tables.")
+
+    return document
+
+
+# =============================================================================
 # Main
 # =============================================================================
 
@@ -1158,6 +1448,8 @@ def convert(
         document = build_landscape_document(
             groups, hmap, title="Follow-up Findings", section_base_number=section_number
         )
+    elif output_format == FORMAT_VERI_SUMMARY_BY_SECTION:
+        document = build_veri_summary_document(groups, title="Verification Summary by Section")
     else:
         document = build_document(groups, title="Follow-up Findings")
     document.save(output_path)
@@ -1190,7 +1482,8 @@ def main() -> None:
         help=(
             'Output format (default: "portrait-detail"). '
             '"portrait-detail" = A4 portrait, one detailed table per finding. '
-            '"landscape-detail" = A4 landscape, one summary table per section.'
+            '"landscape-detail" = A4 landscape, one summary table per section. '
+            '"veri-summary-by-section" = A4 portrait, one verification-status-count table per section.'
         ),
     )
     parser.add_argument(
@@ -1199,7 +1492,7 @@ def main() -> None:
         help=(
             'Base report section number used to auto-number section headings '
             'in "landscape-detail" (default: "9", producing "9.1", "9.2", ...). '
-            'Ignored for "portrait-detail".'
+            'Ignored for "portrait-detail" and "veri-summary-by-section".'
         ),
     )
     parser.add_argument("--debug", action="store_true", help="Print diagnostic information while converting")
