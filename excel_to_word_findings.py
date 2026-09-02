@@ -140,12 +140,14 @@ WORD TABLE STYLING - "veri-summary-by-section" format
       on their row, exactly like every other data cell.
     - ONLY each section's title row ("Security Risk Assessment - <Section>",
       merged across all columns) gets a solid, HARDCODED fill color
-      (#FFC000) and is marked as a repeating header row. The 2 header-label
-      rows below it ("Risk Level" / "Number of items by Rectification
-      Status" / individual status column names) are deliberately left
-      un-shaded and non-repeating, so they - like the risk-level rows and
-      the Total row - simply follow the table style's normal alternating
-      band shading (pale orange / no-fill) based on row position.
+      (#FFC000) and is marked as a repeating header row. It is also given a
+      FIXED row height of 0.9cm (VERI_SUMMARY_TITLE_ROW_HEIGHT). The 2
+      header-label rows below it ("Risk Level" / "Number of items by
+      Rectification Status" / individual status column names) are
+      deliberately left un-shaded, at their natural (auto) height, and
+      non-repeating, so they - like the risk-level rows and the Total row -
+      simply follow the table style's normal alternating band shading
+      (pale orange / no-fill) based on row position.
     - The "Risk Level" header label is UNMERGED across its two header rows:
       it appears only in the upper cell; the lower cell beneath it is left
       empty.
@@ -822,6 +824,28 @@ def _set_cell_fill(cell, hex_color: Optional[str]) -> None:
         tcPr.append(shd)
 
 
+def _set_row_height(row, height, rule: str = "atLeast") -> None:
+    """Set an explicit row height (a python-docx Length object, e.g.
+    Cm(0.9)) on a table row via OOXML <w:trHeight>.
+
+    `rule` controls how Word treats the value:
+        - "atLeast" (default): the row is AT LEAST this tall, but will
+          still grow taller if the cell content needs more space (safest
+          choice - guarantees the minimum height without ever clipping
+          text).
+        - "exact": the row is forced to EXACTLY this height, even if the
+          content would otherwise need more room (can clip/overlap text
+          if the content doesn't fit).
+    """
+    trPr = row._tr.get_or_add_trPr()
+    for existing in trPr.findall(qn("w:trHeight")):
+        trPr.remove(existing)
+    trHeight = OxmlElement("w:trHeight")
+    trHeight.set(qn("w:val"), str(height.twips))
+    trHeight.set(qn("w:hRule"), rule)
+    trPr.append(trHeight)
+
+
 def _set_cell_text(
     cell,
     paragraphs: list[str],
@@ -1215,6 +1239,13 @@ VERI_SUMMARY_LEADING_COLUMNS = [
 # don't wrap awkwardly mid-word.
 VERI_SUMMARY_STATUS_COL_WIDTH = Cm(2.6)
 
+# Fixed row height for ONLY the section title row ("Security Risk
+# Assessment - <Section>"). Uses hRule="atLeast" so the row is guaranteed
+# to be at least this tall, but will still grow if the section title text
+# ever needs more vertical space than that (e.g. a very long section name
+# that wraps onto 2 lines) - avoiding any risk of clipped/overlapping text.
+VERI_SUMMARY_TITLE_ROW_HEIGHT = Cm(0.9)
+
 # ---- "Grid Table 4 - Accent 6" built-in Word table style ----
 # python-docx's default template does not ship this style (only "Table
 # Grid" and "Normal Table" are included), so we inject a full definition,
@@ -1436,22 +1467,25 @@ def add_veri_summary_section_block(
 
     ONLY the title row ("Security Risk Assessment - <Section>") gets the
     solid header fill (hardcoded to VERI_SUMMARY_HEADER_FILL, per user
-    request) and is marked as a repeating header row. The 2 header-label
-    rows below it ("Risk Level" / "Number of items by Rectification
-    Status" / individual status column names) are deliberately left WITHOUT
-    any explicit shading and WITHOUT the repeating-header flag, so they -
-    like the risk-level data rows and the Total row - simply inherit the
-    attached "Grid Table 4 - Accent 6" table style's own alternating
-    band1Horz shading (pale orange / no-fill) based on their absolute
-    position in the table. This shading continues seamlessly across
-    section boundaries (verified empirically - see module docstring)."""
+    request), a FIXED row height (VERI_SUMMARY_TITLE_ROW_HEIGHT), and is
+    marked as a repeating header row. The 2 header-label rows below it
+    ("Risk Level" / "Number of items by Rectification Status" / individual
+    status column names) are deliberately left WITHOUT any explicit
+    shading, WITHOUT a fixed height, and WITHOUT the repeating-header flag,
+    so they - like the risk-level data rows and the Total row - simply
+    inherit the attached "Grid Table 4 - Accent 6" table style's own
+    alternating band1Horz shading (pale orange / no-fill) based on their
+    absolute position in the table. This shading continues seamlessly
+    across section boundaries (verified empirically - see module
+    docstring)."""
     counts, totals = _count_section_by_risk_and_status(findings, risk_levels, status_columns)
     n_status_cols = len(status_columns)
     n_cols = 2 + n_status_cols
     numeric_cols = set(_veri_summary_numeric_col_indices(n_status_cols))
 
     # ---- Title row (merged across all columns) - THE ONLY row in this
-    # block that gets the solid header fill + repeats as a page header. ----
+    # block that gets the solid header fill, fixed height, and repeats as
+    # a page header. ----
     title_row = table.add_row()
     title_cell = title_row.cells[0]
     for c in title_row.cells[1:]:
@@ -1463,11 +1497,12 @@ def add_veri_summary_section_block(
     _set_cell_fill(title_cell, VERI_SUMMARY_HEADER_FILL)
     title_cell.vertical_alignment = WD_ALIGN_VERTICAL.TOP
     _set_repeat_header_row(title_row)
+    _set_row_height(title_row, VERI_SUMMARY_TITLE_ROW_HEIGHT, rule="atLeast")
 
     # ---- Header row A + B ----
-    # No explicit shading and no repeat-header flag on either row: they
-    # fall back to the table style's normal alternating band shading, same
-    # as any other data row.
+    # No explicit shading, no fixed height, and no repeat-header flag on
+    # either row: they fall back to the table style's normal alternating
+    # band shading (and natural/auto height), same as any other data row.
     header_row_a = table.add_row()
     header_row_b = table.add_row()
 
