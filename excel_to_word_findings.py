@@ -4,8 +4,20 @@ excel_to_word_findings.py
 ==========================
 
 Convert a cybersecurity "Follow-up Plan" Excel workbook into a formal Word
-report, rendering ONE Word table per finding (General Control Review,
-Vulnerability Scanning, Web/API Penetration Testing, Source Code Review, etc).
+report. The SAME data-extraction logic (locating the sheet/table, mapping
+columns, validating values, grouping by section) is shared across TWO output
+FORMATS, selected via --format:
+
+    - "portrait-detail" (default): A4 portrait. Renders ONE 2-column Word
+      table PER FINDING (General Control Review, Vulnerability Scanning,
+      Web/API Penetration Testing, Source Code Review, etc), matching the
+      detailed per-finding write-up layout used elsewhere in the report.
+
+    - "landscape-detail": A4 landscape. Renders ONE summary Word table PER
+      SECTION (e.g. "9.1 General Control Review", "9.2 Vulnerability
+      Scanning", ...), with one row per finding and columns for #, Findings,
+      Affected, Risk Description, Risk Level, Impact / Likelihood,
+      Recommendation, and Rectification Status.
 
 -------------------------------------------------------------------------
 HOW IT LOCATES THE DATA
@@ -36,7 +48,9 @@ HOW IT LOCATES THE DATA
    cell are treated as SECTION HEADER rows (e.g. "General Control Review",
    "Vulnerability Scanning", "Web Penetration Testing") and are rendered as
    Word Heading 2 paragraphs instead of finding tables. The merge does not
-   need to span the entire table width - only the first 6 columns.
+   need to span the entire table width - only the first 6 columns (a merge
+   spanning the FULL table width also still counts, since it necessarily
+   covers at least the first 6 columns too).
 5. Every other non-blank row within the bounding box is treated as a single
    finding and validated + rendered as its own 2-column Word table.
 
@@ -59,7 +73,7 @@ The script warns (stderr) - but does NOT fail - on unexpected values for:
 All warnings are also collected and summarized at the end of the run.
 
 -------------------------------------------------------------------------
-WORD TABLE STYLING
+WORD TABLE STYLING - "portrait-detail" format
 -------------------------------------------------------------------------
     - All text: Times New Roman, 12pt.
     - All cell content is top-aligned (vertically) and has no extra spacing
@@ -75,12 +89,48 @@ WORD TABLE STYLING
       (with no extra paragraph spacing added below them).
 
 -------------------------------------------------------------------------
+WORD TABLE STYLING - "landscape-detail" format
+-------------------------------------------------------------------------
+    - Page: A4, landscape orientation.
+    - All text: Times New Roman, 12pt (including section headings and the
+      "The following issues are identified:" intro paragraph).
+    - Each section becomes its own bold heading, auto-numbered as
+      "<section-number>.<n> <Section Title>" (e.g. "9.1 General Control
+      Review"), followed by one summary table for that section's findings.
+    - Table header row: standard blue shading (#0070C0), white font, bold,
+      and "Repeat Header Rows" enabled (repeats on every page the table
+      spans).
+    - Table columns: #, Findings, Affected, Risk Description, Risk Level,
+      Impact / Likelihood, Recommendation, Rectification Status as of
+      <date> (date is derived per-section from the rightmost verification
+      column that has any data in that section, using the same date
+      extraction/normalization logic as the portrait format).
+    - Risk Level value cells are colored using the EXACT SAME color scheme
+      as the portrait format (Critical=#FF0000, High=#F4B083,
+      Medium=#FFFF00, Low=#00FFFF, OFI=#92D050) - the coloring logic is
+      shared/reused, not duplicated.
+    - Data rows are NOT bold (only the header row and section headings are
+      bold).
+
+-------------------------------------------------------------------------
 USAGE
 -------------------------------------------------------------------------
     python excel_to_word_findings.py input.xlsx
     python excel_to_word_findings.py input.xlsx output.docx
     python excel_to_word_findings.py input.xlsx --sheet "Follow-up Items"
+    python excel_to_word_findings.py input.xlsx --format landscape-detail
+    python excel_to_word_findings.py input.xlsx --format landscape-detail --section-number 9
     python excel_to_word_findings.py input.xlsx --debug
+
+--format accepts a string enum (not a boolean), so more formats can be
+added later without breaking the CLI:
+    - "portrait-detail"  (default) - one detailed table per finding, A4 portrait.
+    - "landscape-detail" - one summary table per section, A4 landscape.
+
+--section-number sets the base report section number used to auto-number
+section headings in "landscape-detail" (default: "9", producing "9.1",
+"9.2", "9.3", ... in the order sections appear in the workbook). Ignored
+for "portrait-detail".
 
 Manual overrides (use if auto-detection of the table picks the wrong
 region - e.g. if other bordered cells exist elsewhere on the sheet):
@@ -100,10 +150,11 @@ from typing import Optional
 import openpyxl
 from bs4 import BeautifulSoup
 from docx import Document
+from docx.enum.section import WD_ORIENT
 from docx.enum.table import WD_ALIGN_VERTICAL
 from docx.oxml import OxmlElement
 from docx.oxml.ns import qn
-from docx.shared import Cm, Pt, RGBColor
+from docx.shared import Cm, Mm, Pt, RGBColor
 from openpyxl.worksheet.worksheet import Worksheet
 
 # =============================================================================
@@ -112,6 +163,15 @@ from openpyxl.worksheet.worksheet import Worksheet
 
 DEFAULT_SHEET_NAME = "Follow-up Items"
 DEFAULT_SHEET_INDEX_FALLBACK = 2  # zero-based -> 3rd sheet
+
+# Output format enum (string values, NOT a boolean, so more formats can be
+# added later without changing the CLI shape).
+FORMAT_PORTRAIT_DETAIL = "portrait-detail"
+FORMAT_LANDSCAPE_DETAIL = "landscape-detail"
+OUTPUT_FORMATS = [FORMAT_PORTRAIT_DETAIL, FORMAT_LANDSCAPE_DETAIL]
+DEFAULT_OUTPUT_FORMAT = FORMAT_PORTRAIT_DETAIL
+
+DEFAULT_SECTION_NUMBER = "9"
 
 RISK_LEVELS = {"critical", "high", "medium", "low", "ofi"}
 IMPACT_LEVELS = {"critical", "high", "medium", "low", "very low"}
@@ -232,22 +292,35 @@ _MONTHS = [
 
 def clean_text(value) -> str:
     """Convert a raw cell value to plain text, stripping any HTML markup
-    that may have been pasted into the cell (e.g. anchor tags)."""
+    that may have been pasted into the cell (e.g. anchor tags), while
+    PRESERVING any surrounding plain text and the cell's original line
+    breaks.
+
+    Handles both:
+        - A cell whose ENTIRE value is just an anchor tag, e.g.
+          '<a href="https://x">https://x</a>' -> "https://x"
+        - A cell with an anchor EMBEDDED within a larger block of text,
+          e.g. 'Update the packages.\\n\\nReference: <a href="...">...</a>'
+          -> 'Update the packages.\\n\\nReference: https://...' (all
+          surrounding text is preserved; only the <a> tag itself is
+          replaced by its visible text, or its href if it has none).
+    """
     if value is None:
         return ""
     text = str(value)
     if "<" in text and ">" in text:
         try:
             soup = BeautifulSoup(text, "html.parser")
-            a_tag = soup.find("a")
-            if a_tag is not None:
+            for a_tag in soup.find_all("a"):
                 visible = a_tag.get_text(strip=True)
-                if visible:
-                    return visible
                 href = a_tag.get("href")
-                if href:
-                    return href
-            plain = soup.get_text(separator="\n").strip()
+                a_tag.replace_with(visible or href or "")
+            # No separator: real line breaks already exist as literal "\n"
+            # characters WITHIN the original text nodes. Using a separator
+            # here would incorrectly insert extra line breaks at every tag
+            # boundary (e.g. splitting "Reference: " from the URL that
+            # replaced the <a> tag onto two different lines).
+            plain = soup.get_text().strip()
             if plain:
                 return plain
         except Exception:
@@ -401,7 +474,6 @@ def map_headers(ws: Worksheet, header_row: int, min_col: int, max_col: int) -> H
 # merged, e.g. "Penetration Testing")
 # =============================================================================
 
-
 SECTION_HEADER_MIN_MERGED_COLS = 6
 
 
@@ -417,6 +489,8 @@ def section_title_for_row(ws: Worksheet, row: int, min_col: int, max_col: int) -
             # Treat as a section header if the merge starts at (or right at)
             # the leftmost column of the table AND spans at least the first
             # 6 columns (rather than requiring the entire row to be merged).
+            # A row merged across the FULL table width also satisfies this,
+            # since it necessarily covers at least the first 6 columns too.
             if mc.min_col <= min_col + 1 and covered >= required_merged_cols:
                 anchor = ws.cell(row=mc.min_row, column=mc.min_col).value
                 return clean_text(anchor)
@@ -441,6 +515,12 @@ class Finding:
     recommended_safeguards: list[str]
     verification_status: str
     verification_date_label: str
+    # Column index (1-based, openpyxl-style) of the verification column that
+    # was actually used (last non-empty, left-to-right) for THIS finding, or
+    # None if no verification column had a value. Used by the
+    # "landscape-detail" format to derive a single, section-level
+    # "Rectification Status as of <date>" column header.
+    verification_col_used: Optional[int] = None
 
 
 def get_val(ws: Worksheet, row: int, col: Optional[int]) -> str:
@@ -519,11 +599,13 @@ def extract_findings(
         # Verification: take the LAST non-empty column, left-to-right.
         verification_raw = ""
         verification_header = ""
+        verification_col_used: Optional[int] = None
         for col, header_text in hmap.verification_cols:
             val = get_val(ws, row, col)
             if val:
                 verification_raw = val
                 verification_header = header_text
+                verification_col_used = col
 
         # Normalize to one of the 5 canonical labels (prefix match), dropping
         # any trailing explanatory text. Warn if nothing matches.
@@ -560,6 +642,7 @@ def extract_findings(
                 recommended_safeguards=recommended_safeguards,
                 verification_status=verification_status,
                 verification_date_label=verification_date_label,
+                verification_col_used=verification_col_used,
             )
         )
 
@@ -569,12 +652,81 @@ def extract_findings(
     return groups
 
 
+def group_verification_status_label(findings: list[Finding], hmap: HeaderMap) -> str:
+    """Derive a SINGLE 'Rectification Status as of <date>' column header for
+    an entire section's summary table (used by the "landscape-detail"
+    format, where the rectification/verification date is a per-TABLE column
+    header rather than a per-ROW label as in "portrait-detail").
+
+    Convention (reusing the same date-extraction logic as the per-row
+    label): among all verification columns actually used by ANY finding in
+    this section, pick the RIGHTMOST one (i.e. the latest verification
+    round that applies to this section) and extract its date the same way
+    the portrait format does. Falls back to a generic placeholder if no
+    verification data is available for this section.
+    """
+    if not hmap.verification_cols:
+        return "Rectification Status as of dd MMM yyyy"
+
+    used_cols = {f.verification_col_used for f in findings if f.verification_col_used is not None}
+    if not used_cols:
+        return "Rectification Status as of dd MMM yyyy"
+
+    max_col = max(used_cols)
+    header_text = next((h for c, h in hmap.verification_cols if c == max_col), "")
+
+    date_str = extract_date(header_text) if header_text else None
+    if date_str:
+        return f"Rectification Status as of {date_str}"
+    elif header_text:
+        return f"Rectification Status ({header_text})"
+    return "Rectification Status as of dd MMM yyyy"
+
+
 # =============================================================================
 # Step 5: build the Word document
 # =============================================================================
 
 LABEL_COL_WIDTH = Cm(4.2)
 VALUE_COL_WIDTH = Cm(12.8)
+
+
+def _set_table_column_widths(table, widths: list) -> None:
+    """Explicitly (re)write the table's <w:tblGrid> to match the given
+    column widths (a list of python-docx Length objects, e.g. Cm(1.2)), and
+    also set <w:tblW> to the sum of those widths.
+
+    Why this is necessary: python-docx's `cell.width = ...` only sets the
+    per-cell <w:tcW>. Some renderers use <w:tblGrid> (not the individual
+    per-cell widths) to lay out a table's columns when the two disagree -
+    which they do by default, since add_table() always creates a tblGrid
+    with the page's default width divided evenly across all columns. If we
+    only set cell.width without also correcting tblGrid, columns can render
+    at the wrong (evenly-distributed) widths despite tcW being "correct" in
+    the underlying XML. This function keeps both in sync so the intended
+    widths are honored consistently.
+    """
+    tbl = table._tbl
+    tblGrid = tbl.tblGrid
+    for gc in list(tblGrid):
+        tblGrid.remove(gc)
+    for w in widths:
+        gridCol = OxmlElement("w:gridCol")
+        gridCol.set(qn("w:w"), str(w.twips))
+        tblGrid.append(gridCol)
+
+    tblPr = tbl.tblPr
+    tblW = tblPr.find(qn("w:tblW"))
+    if tblW is None:
+        tblW = OxmlElement("w:tblW")
+        tblPr.append(tblW)
+    tblW.set(qn("w:type"), "dxa")
+    tblW.set(qn("w:w"), str(sum(w.twips for w in widths)))
+
+    # Keep every existing row's cells in sync with the corrected grid too.
+    for row in table.rows:
+        for cell, w in zip(row.cells, widths):
+            cell.width = w
 
 
 def _set_cell_fill(cell, hex_color: Optional[str]) -> None:
@@ -629,10 +781,7 @@ def add_finding_table(document: Document, finding: Finding) -> None:
     table = document.add_table(rows=10, cols=2)
     table.style = "Table Grid"
     table.autofit = False
-
-    for row in table.rows:
-        row.cells[0].width = LABEL_COL_WIDTH
-        row.cells[1].width = VALUE_COL_WIDTH
+    _set_table_column_widths(table, [LABEL_COL_WIDTH, VALUE_COL_WIDTH])
 
     rows_content = [
         (finding.finding_id, [finding.finding_title]),
@@ -687,9 +836,11 @@ def _add_blank_separator_paragraph(document: Document):
     return p
 
 
-def build_document(groups: list[tuple[Optional[str], list[Finding]]], title: str) -> Document:
-    document = Document()
-
+def _apply_base_styles(document: Document) -> None:
+    """Shared styling setup used by BOTH output formats: fixes the OOXML
+    <w:zoom> validation issue, and forces Times New Roman 12pt across the
+    Normal style AND the Heading 1/2 styles, so ALL text in the document
+    (body text and headings alike) uses the same font/size."""
     # python-docx's default template omits the required w:percent attribute
     # on <w:zoom>; add it so the resulting file passes strict OOXML validation.
     zoom = document.settings.element.find(qn("w:zoom"))
@@ -702,13 +853,18 @@ def build_document(groups: list[tuple[Optional[str], list[Finding]]], title: str
     style.paragraph_format.space_before = Pt(0)
     style.paragraph_format.space_after = Pt(0)
 
-    # Apply the same font/size to heading styles too, so ALL text in the
-    # document (including section headings) uses Times New Roman 12pt.
     for heading_style_id in ("Heading 1", "Heading 2"):
         if heading_style_id in document.styles:
             hstyle = document.styles[heading_style_id]
             hstyle.font.name = FONT_NAME
             hstyle.font.size = Pt(FONT_SIZE)
+
+
+def build_document(groups: list[tuple[Optional[str], list[Finding]]], title: str) -> Document:
+    """Build the "portrait-detail" output: A4 portrait, one 2-column Word
+    table PER FINDING."""
+    document = Document()
+    _apply_base_styles(document)
 
     document.add_heading(title, level=1)
 
@@ -733,6 +889,166 @@ def build_document(groups: list[tuple[Optional[str], list[Finding]]], title: str
 
 
 # =============================================================================
+# "landscape-detail" format: one summary table per section, A4 landscape
+# =============================================================================
+
+# Content width targeted for A4 landscape with the margins set in
+# _setup_a4_landscape() below: 29.7cm - (1.5cm left + 1.5cm right) = 26.7cm.
+LANDSCAPE_COLUMNS = [
+    # (header_label, width)
+    ("#", Cm(1.2)),
+    ("Findings", Cm(3.5)),
+    ("Affected", Cm(3.6)),
+    ("Risk Description", Cm(5.3)),
+    ("Risk Level", Cm(2.0)),
+    ("Impact / Likelihood", Cm(2.5)),
+    ("Recommendation", Cm(5.1)),
+    # The last column's header is dynamic ("Rectification Status as of
+    # <date>") and is filled in per-section at render time; the width is
+    # fixed here.
+    (None, Cm(3.5)),
+]
+
+
+def _setup_a4_landscape(document: Document) -> None:
+    """Configure the document's first section as A4, landscape orientation."""
+    section = document.sections[0]
+    section.orientation = WD_ORIENT.LANDSCAPE
+    section.page_width = Mm(297)
+    section.page_height = Mm(210)
+    section.left_margin = Cm(1.5)
+    section.right_margin = Cm(1.5)
+    section.top_margin = Cm(2.0)
+    section.bottom_margin = Cm(2.0)
+
+
+def _set_repeat_header_row(row) -> None:
+    """Mark a table row as a repeating header row (OOXML <w:tblHeader/>),
+    so it repeats at the top of every page the table spans."""
+    trPr = row._tr.get_or_add_trPr()
+    tbl_header = OxmlElement("w:tblHeader")
+    tbl_header.set(qn("w:val"), "true")
+    trPr.append(tbl_header)
+
+
+def _lines_from_text(text: str) -> list[str]:
+    """Split an already-cleaned string (e.g. Finding.affected, which may
+    retain literal '\\n' line breaks copied from the source Excel cell,
+    such as multiple IP addresses) into a list of non-empty lines."""
+    if not text:
+        return [""]
+    parts = [p.strip() for p in text.replace("\r\n", "\n").split("\n")]
+    parts = [p for p in parts if p]
+    return parts or [""]
+
+
+def add_section_summary_table(
+    document: Document,
+    findings: list[Finding],
+    hmap: HeaderMap,
+) -> None:
+    """Render ONE section's findings as a single summary table (one row per
+    finding), per the "landscape-detail" layout."""
+    n_cols = len(LANDSCAPE_COLUMNS)
+    column_widths = [width for _, width in LANDSCAPE_COLUMNS]
+    table = document.add_table(rows=1, cols=n_cols)
+    table.style = "Table Grid"
+    table.autofit = False
+    _set_table_column_widths(table, column_widths)
+
+    rectification_header = group_verification_status_label(findings, hmap)
+
+    # ---- Header row ----
+    header_row = table.rows[0]
+    for i, (label, width) in enumerate(LANDSCAPE_COLUMNS):
+        cell = header_row.cells[i]
+        cell.width = width
+        header_text = label if label is not None else rectification_header
+        _set_cell_text(cell, [header_text], bold=True, font_color=HEADER_ROW_FONT_COLOR)
+        _set_cell_fill(cell, HEADER_ROW_FILL)
+        cell.vertical_alignment = WD_ALIGN_VERTICAL.TOP
+    _set_repeat_header_row(header_row)
+
+    # ---- Data rows (one per finding) ----
+    for finding in findings:
+        row = table.add_row()
+        cells = row.cells
+        for i, (_, width) in enumerate(LANDSCAPE_COLUMNS):
+            cells[i].width = width
+
+        values = [
+            [finding.finding_id],
+            [finding.finding_title],
+            _lines_from_text(finding.affected),
+            finding.risk_description or [""],
+            [finding.risk_level],
+            [f"{finding.impact} / {finding.likelihood}" if (finding.impact or finding.likelihood) else ""],
+            finding.recommended_safeguards or [""],
+            [finding.verification_status],
+        ]
+
+        RISK_LEVEL_COL_INDEX = 4
+
+        for i, paragraphs in enumerate(values):
+            cell = cells[i]
+            _set_cell_text(cell, paragraphs, bold=False)
+            if i == RISK_LEVEL_COL_INDEX:
+                # Reuse the EXACT SAME risk-level color scheme/logic as the
+                # portrait format (RISK_LEVEL_COLORS + _set_cell_fill).
+                risk_hex = RISK_LEVEL_COLORS.get(normalize(finding.risk_level))
+                _set_cell_fill(cell, risk_hex)
+            else:
+                _set_cell_fill(cell, None)
+            cell.vertical_alignment = WD_ALIGN_VERTICAL.TOP
+
+
+def build_landscape_document(
+    groups: list[tuple[Optional[str], list[Finding]]],
+    hmap: HeaderMap,
+    title: str,
+    section_base_number: str = DEFAULT_SECTION_NUMBER,
+) -> Document:
+    """Build the "landscape-detail" output: A4 landscape, one summary table
+    PER SECTION (e.g. "9.1 General Control Review"), reusing the same
+    Finding/HeaderMap data produced by extract_findings()."""
+    document = Document()
+    _apply_base_styles(document)
+    _setup_a4_landscape(document)
+
+    document.add_heading(title, level=1)
+
+    total = 0
+    subsection_index = 0
+    for section_title, findings in groups:
+        if not findings:
+            continue
+
+        subsection_index += 1
+        heading_text = f"{section_base_number}.{subsection_index} {section_title or 'Findings'}"
+        document.add_heading(heading_text, level=2)
+
+        intro = document.add_paragraph("The following issues are identified:")
+        intro.paragraph_format.space_before = Pt(0)
+        intro.paragraph_format.space_after = Pt(6)
+        for run in intro.runs:
+            run.font.name = FONT_NAME
+            run.font.size = Pt(FONT_SIZE)
+
+        add_section_summary_table(document, findings, hmap)
+        total += len(findings)
+
+        # Spacer between this section's table and the next section heading.
+        spacer = document.add_paragraph("")
+        spacer.paragraph_format.space_before = Pt(0)
+        spacer.paragraph_format.space_after = Pt(0)
+
+    if total == 0:
+        warn("No findings were extracted - the output document will be empty of tables.")
+
+    return document
+
+
+# =============================================================================
 # Main
 # =============================================================================
 
@@ -745,6 +1061,8 @@ def convert(
     left_col: Optional[int] = None,
     bottom_row: Optional[int] = None,
     right_col: Optional[int] = None,
+    output_format: str = DEFAULT_OUTPUT_FORMAT,
+    section_number: str = DEFAULT_SECTION_NUMBER,
     debug: bool = False,
 ) -> None:
     wb = openpyxl.load_workbook(input_path, data_only=True)
@@ -773,7 +1091,12 @@ def convert(
         n = sum(len(f) for _, f in groups)
         print(f"[debug] Extracted {n} findings across {len(groups)} section group(s).", file=sys.stderr)
 
-    document = build_document(groups, title="Follow-up Findings")
+    if output_format == FORMAT_LANDSCAPE_DETAIL:
+        document = build_landscape_document(
+            groups, hmap, title="Follow-up Findings", section_base_number=section_number
+        )
+    else:
+        document = build_document(groups, title="Follow-up Findings")
     document.save(output_path)
 
     print(f"Saved: {output_path}")
@@ -796,6 +1119,26 @@ def main() -> None:
     parser.add_argument("--left-col", type=int, default=None, help="Manually override: 1-based leftmost column")
     parser.add_argument("--bottom-row", type=int, default=None, help="Manually override: 1-based last data row")
     parser.add_argument("--right-col", type=int, default=None, help="Manually override: 1-based rightmost column")
+    parser.add_argument(
+        "--format",
+        dest="output_format",
+        choices=OUTPUT_FORMATS,
+        default=DEFAULT_OUTPUT_FORMAT,
+        help=(
+            'Output format (default: "portrait-detail"). '
+            '"portrait-detail" = A4 portrait, one detailed table per finding. '
+            '"landscape-detail" = A4 landscape, one summary table per section.'
+        ),
+    )
+    parser.add_argument(
+        "--section-number",
+        default=DEFAULT_SECTION_NUMBER,
+        help=(
+            'Base report section number used to auto-number section headings '
+            'in "landscape-detail" (default: "9", producing "9.1", "9.2", ...). '
+            'Ignored for "portrait-detail".'
+        ),
+    )
     parser.add_argument("--debug", action="store_true", help="Print diagnostic information while converting")
     args = parser.parse_args()
 
@@ -809,6 +1152,8 @@ def main() -> None:
         left_col=args.left_col,
         bottom_row=args.bottom_row,
         right_col=args.right_col,
+        output_format=args.output_format,
+        section_number=args.section_number,
         debug=args.debug,
     )
 
