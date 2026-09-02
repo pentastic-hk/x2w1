@@ -129,23 +129,28 @@ WORD TABLE STYLING - "veri-summary-by-section" format
       (injected into the document, since python-docx's default template
       does not ship it), which drives:
         - the table's border color (a themed orange/accent6 grid), and
-        - the alternating pale/unfilled row shading for ALL data rows
-          (Risk Level rows + Total row), computed AUTOMATICALLY by Word's
-          own table-style banding engine based on each row's absolute
-          position in the table (continues seamlessly across section
-          boundaries - verified empirically that header/title rows do
-          not reset or disrupt the alternating sequence).
+        - the alternating pale/unfilled row shading, computed AUTOMATICALLY
+          by Word's own table-style banding engine based on each row's
+          absolute position in the table (continues seamlessly across
+          section boundaries - verified empirically that intervening rows
+          do not reset or disrupt the alternating sequence).
       Risk Level value cells (High/Medium/Low/OFI/Critical) are therefore
       NOT colored with the portrait/landscape formats' risk-level color
       scheme - they simply inherit whichever alternating band color falls
       on their row, exactly like every other data cell.
-    - Each section's title row ("Security Risk Assessment - <Section>",
-      merged across all columns) and its 2-row header block ("Risk Level" /
-      "Number of items by Rectification Status" / individual status column
-      names) are explicitly shaded with the style's accent (orange) fill,
-      matching the header look used by "Grid Table 4 - Accent 6".
-    - ALL text in the table (including header/title rows) is black
-      (Automatic) - no white text anywhere, even on the shaded header rows.
+    - ONLY each section's title row ("Security Risk Assessment - <Section>",
+      merged across all columns) gets a solid, HARDCODED fill color
+      (#FFC000) and is marked as a repeating header row. The 2 header-label
+      rows below it ("Risk Level" / "Number of items by Rectification
+      Status" / individual status column names) are deliberately left
+      un-shaded and non-repeating, so they - like the risk-level rows and
+      the Total row - simply follow the table style's normal alternating
+      band shading (pale orange / no-fill) based on row position.
+    - The "Risk Level" header label is UNMERGED across its two header rows:
+      it appears only in the upper cell; the lower cell beneath it is left
+      empty.
+    - ALL text in the table (including the title row) is black (Automatic)
+      - no white text anywhere, even on the shaded title row.
     - Bold is applied ONLY to: each section's title cell, the "Risk Level"
       header cell, and every cell in each section's "Total" row. All other
       cells (including the Risk Level VALUE cells like "High"/"Medium" and
@@ -153,9 +158,9 @@ WORD TABLE STYLING - "veri-summary-by-section" format
     - Center-aligned: every numeric count cell (Total/Completed/Partially
       Completed/Incomplete/Scheduled/Accepted values, in both the
       risk-level rows and the Total row) AND the column-label header cells
-      for those same columns (i.e. the row-3 header cells: "Total",
+      for those same columns (i.e. the second header row's cells: "Total",
       "Completed", "Partially Completed", "Incomplete", "Scheduled",
-      "Accepted"). Everything else (title, "Risk Level" labels, risk level
+      "Accepted"). Everything else (title, "Risk Level" label, risk level
       values, "Number of items by Rectification Status") stays left-aligned.
     - The "Critical" risk-level row is shown (above "High") only if used
       anywhere in the workbook; the "Partially Completed" status column is
@@ -207,7 +212,7 @@ from docx.enum.section import WD_ORIENT
 from docx.enum.table import WD_ALIGN_VERTICAL
 from docx.enum.text import WD_ALIGN_PARAGRAPH
 from docx.oxml import OxmlElement, parse_xml
-from docx.oxml.ns import nsdecls, qn
+from docx.oxml.ns import qn, nsdecls
 from docx.shared import Cm, Mm, Pt, RGBColor
 from openpyxl.worksheet.worksheet import Worksheet
 
@@ -1222,6 +1227,13 @@ GRID_TABLE_4_ACCENT6_STYLE_ID = "GridTable4Accent6"
 GRID_TABLE_4_ACCENT6_STYLE_NAME = "Grid Table 4 Accent 6"
 THEME_ACCENT6_HEX = "F79646"  # accent6 in python-docx's bundled "Office" theme
 
+# Hardcoded fill color for ONLY the section title row ("Security Risk
+# Assessment - <Section>"). Explicitly hardcoded per user request (rather
+# than derived from the table style/theme like the borders and banding
+# are), so it does NOT change if the attached table style's theme color
+# changes.
+VERI_SUMMARY_HEADER_FILL = "FFC000"
+
 
 def _theme_tint_hex(hex_color: str, tint_255: int) -> str:
     """Approximate the Office 'theme tint' lightening transform: a simple
@@ -1420,16 +1432,26 @@ def add_veri_summary_section_block(
 ) -> None:
     """Append ONE section's "Verification Summary" block (title row + 2
     header rows + risk-level rows + Total row) onto the END of an existing,
-    shared table. Data-row shading is intentionally left untouched so the
+    shared table.
+
+    ONLY the title row ("Security Risk Assessment - <Section>") gets the
+    solid header fill (hardcoded to VERI_SUMMARY_HEADER_FILL, per user
+    request) and is marked as a repeating header row. The 2 header-label
+    rows below it ("Risk Level" / "Number of items by Rectification
+    Status" / individual status column names) are deliberately left WITHOUT
+    any explicit shading and WITHOUT the repeating-header flag, so they -
+    like the risk-level data rows and the Total row - simply inherit the
     attached "Grid Table 4 - Accent 6" table style's own alternating
-    band1Horz shading applies automatically, continuing seamlessly across
+    band1Horz shading (pale orange / no-fill) based on their absolute
+    position in the table. This shading continues seamlessly across
     section boundaries (verified empirically - see module docstring)."""
     counts, totals = _count_section_by_risk_and_status(findings, risk_levels, status_columns)
     n_status_cols = len(status_columns)
     n_cols = 2 + n_status_cols
     numeric_cols = set(_veri_summary_numeric_col_indices(n_status_cols))
 
-    # ---- Title row (merged across all columns) ----
+    # ---- Title row (merged across all columns) - THE ONLY row in this
+    # block that gets the solid header fill + repeats as a page header. ----
     title_row = table.add_row()
     title_cell = title_row.cells[0]
     for c in title_row.cells[1:]:
@@ -1438,32 +1460,33 @@ def add_veri_summary_section_block(
         title_cell, [f"Security Risk Assessment - {section_title}"],
         bold=True, font_color=BLACK_AUTO_COLOR,
     )
-    _set_cell_fill(title_cell, THEME_ACCENT6_HEX)
+    _set_cell_fill(title_cell, VERI_SUMMARY_HEADER_FILL)
     title_cell.vertical_alignment = WD_ALIGN_VERTICAL.TOP
     _set_repeat_header_row(title_row)
 
     # ---- Header row A + B ----
+    # No explicit shading and no repeat-header flag on either row: they
+    # fall back to the table style's normal alternating band shading, same
+    # as any other data row.
     header_row_a = table.add_row()
     header_row_b = table.add_row()
 
-    # "Risk Level" - merged vertically across both header rows. Bold (per
-    # requirement 5), black text.
-    risk_level_header_cell = header_row_a.cells[0].merge(header_row_b.cells[0])
-    _set_cell_text(risk_level_header_cell, ["Risk Level"], bold=True, font_color=BLACK_AUTO_COLOR)
-    _set_cell_fill(risk_level_header_cell, THEME_ACCENT6_HEX)
-    risk_level_header_cell.vertical_alignment = WD_ALIGN_VERTICAL.TOP
+    # "Risk Level" - UNMERGED: placed only in the upper cell (row A). The
+    # lower cell (row B, column 0) is left empty. Bold (per requirement 5),
+    # black text.
+    _set_cell_text(header_row_a.cells[0], ["Risk Level"], bold=True, font_color=BLACK_AUTO_COLOR)
+    header_row_a.cells[0].vertical_alignment = WD_ALIGN_VERTICAL.TOP
+    _set_cell_text(header_row_b.cells[0], [""], bold=False, font_color=BLACK_AUTO_COLOR)
+    header_row_b.cells[0].vertical_alignment = WD_ALIGN_VERTICAL.TOP
 
-    # Column 1: blank in row A, "Total" in row B (NOT merged vertically,
-    # matching the reference sample). "Total" is a numbering column label
-    # -> center-aligned, not bold (only "Risk Level" and Total-ROW cells
-    # are bold per requirement 5).
+    # Column 1: blank in row A, "Total" in row B. "Total" is a numbering
+    # column label -> center-aligned, not bold (only "Risk Level" and
+    # Total-ROW cells are bold per requirement 5).
     _set_cell_text(header_row_a.cells[1], [""], bold=False, font_color=BLACK_AUTO_COLOR)
-    _set_cell_fill(header_row_a.cells[1], THEME_ACCENT6_HEX)
     _set_cell_text(
         header_row_b.cells[1], ["Total"], bold=False, font_color=BLACK_AUTO_COLOR,
         alignment=WD_ALIGN_PARAGRAPH.CENTER,
     )
-    _set_cell_fill(header_row_b.cells[1], THEME_ACCENT6_HEX)
 
     # "Number of items by Rectification Status" - merged horizontally across
     # all status columns, in row A only. Not bold, black text, left-aligned
@@ -1475,7 +1498,6 @@ def add_veri_summary_section_block(
         super_header_cell, ["Number of items by Rectification Status"],
         bold=False, font_color=BLACK_AUTO_COLOR,
     )
-    _set_cell_fill(super_header_cell, THEME_ACCENT6_HEX)
 
     # Individual status column labels in row B - these ARE the "verification
     # status cells that label the columns" -> center-aligned, not bold.
@@ -1485,11 +1507,7 @@ def add_veri_summary_section_block(
             cell, [col_name], bold=False, font_color=BLACK_AUTO_COLOR,
             alignment=WD_ALIGN_PARAGRAPH.CENTER,
         )
-        _set_cell_fill(cell, THEME_ACCENT6_HEX)
         cell.vertical_alignment = WD_ALIGN_VERTICAL.TOP
-
-    for row in (header_row_a, header_row_b):
-        _set_repeat_header_row(row)
 
     # ---- Risk-level data rows ----
     # Shading intentionally NOT set here: the attached table style's
