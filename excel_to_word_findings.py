@@ -45,6 +45,10 @@ HOW IT LOCATES THE DATA
        - "Likelihood" (optional)     -> Likelihood
        - "Risk Description"          -> Risk Description
        - "Recommend*"/"Safeguard*"   -> Recommended Safeguards
+       - "OWASP*" (optional)         -> OWASP Top 10 (free text, no
+                                         predefined/canonical values, so it
+                                         is never validated or normalized -
+                                         just cleaned and passed through)
        - "Verification*"             -> one or more verification columns
                                          (rightmost non-empty per row wins)
    Any other column immediately to the left of the first "Verification*"
@@ -87,6 +91,8 @@ WORD TABLE STYLING - "portrait-detail" format
     - First row of each finding table (Finding ID / Finding title):
       standard blue shading (#0070C0), white font, bold.
     - First column, all rows EXCEPT the first row: not bold.
+    - "OWASP Top 10" row: populated from the optional "OWASP*" source
+      column when present (left blank otherwise, as before).
     - Risk Level VALUE cell: shaded according to its risk level
       (Critical=#FF0000, High=#F4B083, Medium=#FFFF00, Low=#00FFFF,
       OFI=#92D050).
@@ -108,10 +114,14 @@ WORD TABLE STYLING - "landscape-detail" format
       and "Repeat Header Rows" enabled (repeats on every page the table
       spans).
     - Table columns: #, Findings, Affected, Risk Description, Risk Level,
-      Impact / Likelihood, Recommendation, Rectification Status as of
-      <date> (date is derived per-section from the rightmost verification
-      column that has any data in that section, using the same date
-      extraction/normalization logic as the portrait format).
+      Impact / Likelihood, [OWASP Top 10 (optional - only included if the
+      source workbook has that column)], Recommendation, Rectification
+      Status as of <date> (date is derived per-section from the rightmost
+      verification column that has any data in that section, using the
+      same date extraction/normalization logic as the portrait format).
+      Whether the "OWASP Top 10" column is included is decided ONCE for
+      the whole document (not per-section), so every section's table has
+      an identical column set.
     - Risk Level value cells are colored using the EXACT SAME color scheme
       as the portrait format (Critical=#FF0000, High=#F4B083,
       Medium=#FFFF00, Low=#00FFFF, OFI=#92D050) - the coloring logic is
@@ -472,6 +482,7 @@ class HeaderMap:
     likelihood_col: Optional[int] = None
     risk_description_col: Optional[int] = None
     recommended_safeguards_col: Optional[int] = None
+    owasp_top_10_col: Optional[int] = None
     vendor_response_col: Optional[int] = None
     # list of (column_index, raw_header_text), left-to-right
     verification_cols: list[tuple[int, str]] = field(default_factory=list)
@@ -511,6 +522,13 @@ def map_headers(ws: Worksheet, header_row: int, min_col: int, max_col: int) -> H
             assigned.add(col)
         elif "recommend" in norm or "safeguard" in norm:
             hmap.recommended_safeguards_col = col
+            assigned.add(col)
+        elif "owasp" in norm:
+            # Optional column. There are no predefined/canonical values for
+            # this field, so its contents are never validated/normalized -
+            # they are simply passed through verbatim (after the usual HTML
+            # cleanup) to the output.
+            hmap.owasp_top_10_col = col
             assigned.add(col)
         # else: leave unassigned for now (candidate for vendor response)
 
@@ -586,6 +604,11 @@ class Finding:
     likelihood: str
     risk_description: list[str]
     recommended_safeguards: list[str]
+    # Optional, free-text column with no predefined/canonical values, so it
+    # is never validated or normalized - just cleaned (HTML stripped) and
+    # split into paragraphs like Risk Description / Recommended Safeguards.
+    # Empty list if the source workbook has no "OWASP Top 10" column.
+    owasp_top_10: list[str]
     verification_status: str
     verification_date_label: str
     # Column index (1-based, openpyxl-style) of the verification column that
@@ -668,6 +691,7 @@ def extract_findings(
         affected = get_val(ws, row, hmap.affected_col)
         risk_description = split_paragraphs(ws.cell(row=row, column=hmap.risk_description_col).value) if hmap.risk_description_col else []
         recommended_safeguards = split_paragraphs(ws.cell(row=row, column=hmap.recommended_safeguards_col).value) if hmap.recommended_safeguards_col else []
+        owasp_top_10 = split_paragraphs(ws.cell(row=row, column=hmap.owasp_top_10_col).value) if hmap.owasp_top_10_col else []
 
         # Verification: take the LAST non-empty column, left-to-right.
         verification_raw = ""
@@ -713,6 +737,7 @@ def extract_findings(
                 likelihood=likelihood,
                 risk_description=risk_description,
                 recommended_safeguards=recommended_safeguards,
+                owasp_top_10=owasp_top_10,
                 verification_status=verification_status,
                 verification_date_label=verification_date_label,
                 verification_col_used=verification_col_used,
@@ -998,7 +1023,7 @@ def add_finding_table(document: Document, finding: Finding) -> None:
         ("Risk Description", finding.risk_description),
         ("Risk Level", [finding.risk_level]),
         ("Impact/Likelihood", [f"{finding.impact} / {finding.likelihood}" if (finding.impact or finding.likelihood) else ""]),
-        ("OWASP Top 10", [""]),
+        ("OWASP Top 10", finding.owasp_top_10),
         ("Affected Asset", [finding.affected]),
         ("Evidence for the finding", [""]),
         ("Recommended Safeguards", finding.recommended_safeguards),
@@ -1067,20 +1092,81 @@ def build_document(groups: list[tuple[Optional[str], list[Finding]]], title: str
 
 # Content width targeted for A4 landscape with the margins set in
 # _setup_a4_landscape() below: 29.7cm - (1.5cm left + 1.5cm right) = 26.7cm.
-LANDSCAPE_COLUMNS = [
-    # (header_label, width)
-    ("#", Cm(1.2)),
-    ("Findings", Cm(3.5)),
-    ("Affected", Cm(3.6)),
-    ("Risk Description", Cm(5.3)),
-    ("Risk Level", Cm(2.0)),
-    ("Impact / Likelihood", Cm(2.5)),
-    ("Recommendation", Cm(5.1)),
-    # The last column's header is dynamic ("Rectification Status as of
-    # <date>") and is filled in per-section at render time; the width is
-    # fixed here.
-    (None, Cm(3.5)),
-]
+#
+# Each entry is (key, header_label_or_None, width). `key` is used to look up
+# the corresponding value for each finding (see _landscape_row_values()).
+# The "OWASP Top 10" column is OPTIONAL: it is only included when the source
+# workbook actually has an "OWASP Top 10" column (hmap.owasp_top_10_col is
+# not None) - decided ONCE per document/workbook (not per-section), so every
+# section's table has the same shape.
+#
+# Two separate width sets are defined (rather than simply carving the new
+# column's width out of a single existing column) so that adding "OWASP Top
+# 10" doesn't make any one column uncomfortably narrow - the extra width is
+# instead spread proportionally across several columns. Both sets sum to
+# the same 26.7cm total content width.
+_LANDSCAPE_WIDTHS_NO_OWASP = {
+    "index": Cm(1.2),
+    "findings": Cm(3.5),
+    "affected": Cm(3.6),
+    "risk_description": Cm(5.3),
+    "risk_level": Cm(2.0),
+    "impact_likelihood": Cm(2.5),
+    "recommendation": Cm(5.1),
+    "rectification": Cm(3.5),
+}
+_LANDSCAPE_WIDTHS_WITH_OWASP = {
+    "index": Cm(1.0),
+    "findings": Cm(3.2),
+    "affected": Cm(3.2),
+    "risk_description": Cm(4.6),
+    "risk_level": Cm(1.8),
+    "impact_likelihood": Cm(2.3),
+    "owasp_top_10": Cm(3.0),
+    "recommendation": Cm(4.3),
+    "rectification": Cm(3.3),
+}
+
+
+def landscape_columns(has_owasp: bool) -> list[tuple[str, Optional[str], object]]:
+    """Build the ordered list of (key, header_label_or_None, width) columns
+    for the "landscape-detail" summary table, including "OWASP Top 10" only
+    when `has_owasp` is True (i.e. the source workbook has that optional
+    column). The last column's header is dynamic ("Rectification Status as
+    of <date>") and is filled in per-section at render time - its label is
+    left as None here."""
+    widths = _LANDSCAPE_WIDTHS_WITH_OWASP if has_owasp else _LANDSCAPE_WIDTHS_NO_OWASP
+    columns: list[tuple[str, Optional[str], object]] = [
+        ("index", "#", widths["index"]),
+        ("findings", "Findings", widths["findings"]),
+        ("affected", "Affected", widths["affected"]),
+        ("risk_description", "Risk Description", widths["risk_description"]),
+        ("risk_level", "Risk Level", widths["risk_level"]),
+        ("impact_likelihood", "Impact / Likelihood", widths["impact_likelihood"]),
+    ]
+    if has_owasp:
+        columns.append(("owasp_top_10", "OWASP Top 10", widths["owasp_top_10"]))
+    columns.append(("recommendation", "Recommendation", widths["recommendation"]))
+    columns.append(("rectification", None, widths["rectification"]))
+    return columns
+
+
+def _landscape_row_values(finding: Finding) -> dict[str, list[str]]:
+    """Map each landscape column `key` to the paragraph(s) to render for a
+    given finding. Only keys actually present in `landscape_columns(...)`
+    are looked up by the caller, so it's fine for this dict to always
+    include "owasp_top_10" regardless of has_owasp."""
+    return {
+        "index": [finding.finding_id],
+        "findings": [finding.finding_title],
+        "affected": _lines_from_text(finding.affected),
+        "risk_description": finding.risk_description or [""],
+        "risk_level": [finding.risk_level],
+        "impact_likelihood": [f"{finding.impact} / {finding.likelihood}" if (finding.impact or finding.likelihood) else ""],
+        "owasp_top_10": finding.owasp_top_10 or [""],
+        "recommendation": finding.recommended_safeguards or [""],
+        "rectification": [finding.verification_status],
+    }
 
 
 def _setup_a4_landscape(document: Document) -> None:
@@ -1110,11 +1196,15 @@ def add_section_summary_table(
     document: Document,
     findings: list[Finding],
     hmap: HeaderMap,
+    columns: list[tuple[str, Optional[str], object]],
 ) -> None:
     """Render ONE section's findings as a single summary table (one row per
-    finding), per the "landscape-detail" layout."""
-    n_cols = len(LANDSCAPE_COLUMNS)
-    column_widths = [width for _, width in LANDSCAPE_COLUMNS]
+    finding), per the "landscape-detail" layout. `columns` is the
+    (key, header_label_or_None, width) list produced by
+    landscape_columns(has_owasp) - passed in (rather than recomputed here)
+    so every section in the same document uses an IDENTICAL column set."""
+    n_cols = len(columns)
+    column_widths = [width for _, _, width in columns]
     table = document.add_table(rows=1, cols=n_cols)
     table.style = "Table Grid"
     table.autofit = False
@@ -1124,7 +1214,7 @@ def add_section_summary_table(
 
     # ---- Header row ----
     header_row = table.rows[0]
-    for i, (label, width) in enumerate(LANDSCAPE_COLUMNS):
+    for i, (key, label, width) in enumerate(columns):
         cell = header_row.cells[i]
         cell.width = width
         header_text = label if label is not None else rectification_header
@@ -1133,30 +1223,22 @@ def add_section_summary_table(
         cell.vertical_alignment = WD_ALIGN_VERTICAL.TOP
     _set_repeat_header_row(header_row)
 
+    risk_level_col_index = next(i for i, (key, _, _) in enumerate(columns) if key == "risk_level")
+
     # ---- Data rows (one per finding) ----
     for finding in findings:
         row = table.add_row()
         cells = row.cells
-        for i, (_, width) in enumerate(LANDSCAPE_COLUMNS):
+        for i, (_, _, width) in enumerate(columns):
             cells[i].width = width
 
-        values = [
-            [finding.finding_id],
-            [finding.finding_title],
-            _lines_from_text(finding.affected),
-            finding.risk_description or [""],
-            [finding.risk_level],
-            [f"{finding.impact} / {finding.likelihood}" if (finding.impact or finding.likelihood) else ""],
-            finding.recommended_safeguards or [""],
-            [finding.verification_status],
-        ]
+        row_values = _landscape_row_values(finding)
 
-        RISK_LEVEL_COL_INDEX = 4
-
-        for i, paragraphs in enumerate(values):
+        for i, (key, _, _) in enumerate(columns):
             cell = cells[i]
+            paragraphs = row_values[key]
             _set_cell_text(cell, paragraphs, bold=False)
-            if i == RISK_LEVEL_COL_INDEX:
+            if i == risk_level_col_index:
                 # Reuse the EXACT SAME risk-level color scheme/logic as the
                 # portrait format (RISK_LEVEL_COLORS + _set_cell_fill).
                 risk_hex = RISK_LEVEL_COLORS.get(normalize(finding.risk_level))
@@ -1181,6 +1263,12 @@ def build_landscape_document(
 
     document.add_heading(title, level=1)
 
+    # Decided ONCE for the whole document (not per-section), so every
+    # section's table has an identical column set: include "OWASP Top 10"
+    # only if that optional column exists in the source workbook.
+    has_owasp = hmap.owasp_top_10_col is not None
+    columns = landscape_columns(has_owasp)
+
     total = 0
     subsection_index = 0
     for section_title, findings in groups:
@@ -1198,7 +1286,7 @@ def build_landscape_document(
             run.font.name = FONT_NAME
             run.font.size = Pt(FONT_SIZE)
 
-        add_section_summary_table(document, findings, hmap)
+        add_section_summary_table(document, findings, hmap, columns)
         total += len(findings)
 
         # Spacer between this section's table and the next section heading.
