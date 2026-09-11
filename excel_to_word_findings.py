@@ -27,8 +27,12 @@ output FORMATS, selected via --format:
 -------------------------------------------------------------------------
 HOW IT LOCATES THE DATA
 -------------------------------------------------------------------------
-1. Opens the worksheet named "Follow-up Items" (falls back to the 3rd sheet
-   in the workbook if that exact name isn't found, with a warning).
+1. Locates the worksheet to read by trying, in order (case-insensitive):
+   "SRA Follow-up", then "Follow-up Items", then falling back to the 3rd
+   sheet in the workbook (with a warning) if neither name is found. Use
+   --sheet to override this auto-detection with an exact sheet name (which
+   is then the only candidate tried, still falling back to the 3rd sheet
+   if not found).
 2. Scans every cell in the worksheet and finds the bounding box of ALL cells
    that have at least one visible border side set. This bounding box is
    assumed to be the findings table (borders are the only reliable signal,
@@ -185,7 +189,7 @@ USAGE
 -------------------------------------------------------------------------
     python excel_to_word_findings.py input.xlsx
     python excel_to_word_findings.py input.xlsx output.docx
-    python excel_to_word_findings.py input.xlsx --sheet "Follow-up Items"
+    python excel_to_word_findings.py input.xlsx --sheet "SRA Follow-up"
     python excel_to_word_findings.py input.xlsx --format landscape-detail
     python excel_to_word_findings.py input.xlsx --format landscape-detail --section-number 9
     python excel_to_word_findings.py input.xlsx --format veri-summary-by-section
@@ -232,7 +236,10 @@ from openpyxl.worksheet.worksheet import Worksheet
 # Constants / accepted vocabularies
 # =============================================================================
 
-DEFAULT_SHEET_NAME = "Follow-up Items"
+# Ordered list of candidate sheet names to try (case-insensitive), used when
+# the user hasn't explicitly overridden --sheet: "SRA Follow-up" is tried
+# FIRST, then "Follow-up Items", before falling back to the 3rd sheet.
+DEFAULT_SHEET_NAME_CANDIDATES = ["SRA Follow-up", "Follow-up Items"]
 DEFAULT_SHEET_INDEX_FALLBACK = 2  # zero-based -> 3rd sheet
 
 # Output format enum (string values, NOT a boolean, so more formats can be
@@ -307,26 +314,41 @@ def warn(message: str) -> None:
 # =============================================================================
 
 
-def load_sheet(wb: openpyxl.Workbook, sheet_name: str) -> Worksheet:
-    if sheet_name in wb.sheetnames:
-        return wb[sheet_name]
+def load_sheet(wb: openpyxl.Workbook, sheet_name: Optional[str] = None) -> Worksheet:
+    """Locate the worksheet to read from.
 
-    # case-insensitive match
-    for name in wb.sheetnames:
-        if name.strip().lower() == sheet_name.strip().lower():
-            return wb[name]
+    - If `sheet_name` is given (e.g. via --sheet), it is the ONLY candidate
+      tried (case-insensitive exact match), before falling back to the 3rd
+      sheet.
+    - If `sheet_name` is None (the default - no explicit --sheet override),
+      candidates from DEFAULT_SHEET_NAME_CANDIDATES are tried IN ORDER
+      (case-insensitive): "SRA Follow-up" first, then "Follow-up Items",
+      before falling back to the 3rd sheet.
+    """
+    candidates = [sheet_name] if sheet_name else DEFAULT_SHEET_NAME_CANDIDATES
+
+    for candidate in candidates:
+        if candidate in wb.sheetnames:
+            return wb[candidate]
+        # case-insensitive match
+        for name in wb.sheetnames:
+            if name.strip().lower() == candidate.strip().lower():
+                return wb[name]
 
     if len(wb.sheetnames) > DEFAULT_SHEET_INDEX_FALLBACK:
         fallback = wb.sheetnames[DEFAULT_SHEET_INDEX_FALLBACK]
+        tried = " / ".join(f'"{c}"' for c in candidates)
         warn(
-            f'Sheet named "{sheet_name}" not found. '
+            f"None of the candidate sheet name(s) {tried} were found. "
             f'Falling back to the 3rd sheet: "{fallback}".'
         )
         return wb[fallback]
 
+    tried = " / ".join(f'"{c}"' for c in candidates)
     raise ValueError(
-        f'Sheet named "{sheet_name}" not found, and the workbook has fewer '
-        f"than 3 sheets to fall back to. Available sheets: {wb.sheetnames}"
+        f"None of the candidate sheet name(s) {tried} were found, and the "
+        f"workbook has fewer than 3 sheets to fall back to. "
+        f"Available sheets: {wb.sheetnames}"
     )
 
 
@@ -1737,7 +1759,7 @@ def build_veri_summary_document(
 def convert(
     input_path: Path,
     output_path: Path,
-    sheet_name: str = DEFAULT_SHEET_NAME,
+    sheet_name: Optional[str] = None,
     top_row: Optional[int] = None,
     left_col: Optional[int] = None,
     bottom_row: Optional[int] = None,
@@ -1797,7 +1819,15 @@ def main() -> None:
     )
     parser.add_argument("input", type=Path, help="Path to the source .xlsx workbook")
     parser.add_argument("output", type=Path, nargs="?", default=None, help="Path to the output .docx file (default: <input>.docx)")
-    parser.add_argument("--sheet", default=DEFAULT_SHEET_NAME, help='Worksheet name to read (default: "Follow-up Items")')
+    parser.add_argument(
+        "--sheet",
+        default=None,
+        help=(
+            'Worksheet name to read. If omitted, the sheet is auto-detected '
+            '(case-insensitive) by trying "SRA Follow-up" first, then '
+            '"Follow-up Items", before falling back to the 3rd sheet.'
+        ),
+    )
     parser.add_argument("--top-row", type=int, default=None, help="Manually override: 1-based header row")
     parser.add_argument("--left-col", type=int, default=None, help="Manually override: 1-based leftmost column")
     parser.add_argument("--bottom-row", type=int, default=None, help="Manually override: 1-based last data row")
