@@ -206,6 +206,14 @@ section headings in "landscape-detail" (default: "9", producing "9.1",
 "9.2", "9.3", ... in the order sections appear in the workbook). Ignored
 for "portrait-detail" and "veri-summary-by-section".
 
+OUTPUT FILENAME: the --format id is ALWAYS appended as a suffix to the
+output filename, immediately before the file extension - regardless of
+whether the output path was auto-derived from the input filename or
+explicitly provided. For example, "QC FUP v1.2.xlsx" run with
+--format landscape-detail produces "QC FUP v1.2-landscape-detail.docx"
+(and, similarly, an explicitly-provided "report.docx" would become
+"report-landscape-detail.docx").
+
 Manual overrides (use if auto-detection of the table picks the wrong
 region - e.g. if other bordered cells exist elsewhere on the sheet):
     --top-row N --left-col N --bottom-row N --right-col N
@@ -301,6 +309,18 @@ RISK_LEVEL_DISPLAY = {
 }
 
 WARNINGS: list[str] = []
+
+
+def append_format_suffix(output_path: Path, output_format: str) -> Path:
+    """Append the output format id as a suffix to the output filename, right
+    before the file extension - e.g. "QC FUP v1.2.docx" with
+    output_format="landscape-detail" becomes "QC FUP v1.2-landscape-detail.docx".
+
+    Applied unconditionally to whatever output path is ultimately used
+    (whether auto-derived from the input filename or explicitly provided),
+    so the format used to generate a given .docx is always evident from its
+    filename alone."""
+    return output_path.with_name(f"{output_path.stem}-{output_format}{output_path.suffix}")
 
 
 def warn(message: str) -> None:
@@ -1802,6 +1822,8 @@ def convert(
         document = build_veri_summary_document(groups, title="Verification Summary by Section")
     else:
         document = build_document(groups, title="Follow-up Findings")
+
+    output_path = append_format_suffix(output_path, output_format)
     document.save(output_path)
 
     print(f"Saved: {output_path}")
