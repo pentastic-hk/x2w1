@@ -96,6 +96,30 @@ def normalize(s) -> str:
     return re.sub(r"\s+", " ", str(s or "")).strip().lower()
 
 
+def _depluralize_word(word: str) -> str:
+    """Naive singularization: strip a single trailing 's' from a word, but
+    only when doing so is unlikely to change its meaning/matchability -
+    i.e. the word is longer than 3 characters and doesn't already end in
+    'ss' (e.g. "safeguards" -> "safeguard", "items" -> "item", but "class"
+    stays "class", and short words like "is"/"as" are left untouched)."""
+    if len(word) > 3 and word.endswith("s") and not word.endswith("ss"):
+        return word[:-1]
+    return word
+
+
+def normalize_singular(s) -> str:
+    """Like normalize(), but ALSO naively singularizes every word (see
+    _depluralize_word). Used for matching column header labels that may
+    freely include or omit a trailing plural 's' (e.g. "Items to check" vs
+    "Item to check", "Recommended Safeguards" vs "Recommended Safeguard"),
+    so keyword matching can be written once in singular form and match
+    either variant."""
+    norm = normalize(s)
+    if not norm:
+        return norm
+    return " ".join(_depluralize_word(w) for w in norm.split(" "))
+
+
 def normalize_verification_status(value: str) -> tuple[str, bool]:
     """Match `value` against the canonical verification labels as a
     case-insensitive PREFIX match. Returns (output_value, matched):

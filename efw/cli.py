@@ -8,6 +8,7 @@ from pathlib import Path
 from .constants import DEFAULT_OUTPUT_FORMAT, DEFAULT_SECTION_NUMBER, OUTPUT_FORMATS
 from .convert import convert
 
+
 def main() -> None:
     parser = argparse.ArgumentParser(
         description="Convert a cybersecurity follow-up plan Excel workbook into a Word report of findings."
@@ -19,8 +20,10 @@ def main() -> None:
         default=None,
         help=(
             'Worksheet name to read. If omitted, the sheet is auto-detected '
-            '(case-insensitive) by trying "SRA Follow-up" first, then '
-            '"Follow-up Items", before falling back to the 3rd sheet.'
+            '(case-insensitive): for SRA formats, by trying "SRA Follow-up" '
+            'first, then "Follow-up Items", before falling back to the 3rd '
+            'sheet; for SA formats ("sa-detail"/"sa-brief"), by trying '
+            '"SA Follow-up", before falling back to the 4th sheet.'
         ),
     )
     parser.add_argument("--top-row", type=int, default=None, help="Manually override: 1-based header row")
@@ -34,10 +37,12 @@ def main() -> None:
         default=DEFAULT_OUTPUT_FORMAT,
         help=(
             'Output format (default: "portrait-detail"). '
-            '"portrait-detail" = A4 portrait, one detailed table per finding. '
-            '"landscape-detail" = A4 landscape, one summary table per section. '
-            '"veri-summary-by-section" = A4 portrait, one combined verification-status-count table, split by section. '
-            '"veri-summary-executive" = A4 portrait, same table but combining ALL sections into a single count block.'
+            '"portrait-detail" = A4 portrait, one detailed table per finding (SRA). '
+            '"landscape-detail" = A4 landscape, one summary table per section (SRA). '
+            '"veri-summary-by-section" = A4 portrait, one combined verification-status-count table, split by section (SRA). '
+            '"veri-summary-executive" = A4 portrait, same table but combining ALL sections into a single count block (SRA). '
+            '"sa-detail" = A4 landscape, one flat summary table of all Security Audit items. '
+            '"sa-brief" = A4 portrait, same Security Audit items with fewer columns.'
         ),
     )
     parser.add_argument(
@@ -46,7 +51,7 @@ def main() -> None:
         help=(
             'Base report section number used to auto-number section headings '
             'in "landscape-detail" (default: "9", producing "9.1", "9.2", ...). '
-            'Ignored for "portrait-detail", "veri-summary-by-section", and "veri-summary-executive".'
+            'Ignored for all other formats.'
         ),
     )
     parser.add_argument("--debug", action="store_true", help="Print diagnostic information while converting")

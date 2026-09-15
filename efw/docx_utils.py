@@ -235,3 +235,33 @@ def _apply_base_styles(document: Document) -> None:
     for heading_style_id in ("Heading 1", "Heading 2"):
         if heading_style_id in document.styles:
             _hard_set_style_font(document.styles[heading_style_id], FONT_NAME, FONT_SIZE)
+
+
+def _setup_a4_landscape(document: Document) -> None:
+    """Configure the document's first section as A4, landscape orientation."""
+    from docx.enum.section import WD_ORIENT
+    from docx.shared import Cm, Mm
+
+    section = document.sections[0]
+    section.orientation = WD_ORIENT.LANDSCAPE
+    section.page_width = Mm(297)
+    section.page_height = Mm(210)
+    section.left_margin = Cm(1.5)
+    section.right_margin = Cm(1.5)
+    section.top_margin = Cm(2.0)
+    section.bottom_margin = Cm(2.0)
+
+
+def _setup_a4_portrait(document: Document) -> None:
+    """Configure the document's first section as A4, portrait orientation."""
+    from docx.enum.section import WD_ORIENT
+    from docx.shared import Cm, Mm
+
+    section = document.sections[0]
+    section.orientation = WD_ORIENT.PORTRAIT
+    section.page_width = Mm(210)
+    section.page_height = Mm(297)
+    section.left_margin = Cm(1.5)
+    section.right_margin = Cm(1.5)
+    section.top_margin = Cm(2.0)
+    section.bottom_margin = Cm(2.0)

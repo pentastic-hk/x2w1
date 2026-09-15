@@ -79,9 +79,7 @@ def build_document(groups: list[tuple[Optional[str], list[Finding]]], title: str
     table PER FINDING."""
     document = Document()
     _apply_base_styles(document)
-
     document.add_heading(title, level=1)
-
     total = 0
     for section_title, findings in groups:
         if not findings:

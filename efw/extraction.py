@@ -15,7 +15,7 @@ from .constants import (
 )
 from .diagnostics import warn
 from .excel_source import section_title_for_row
-from .models import Finding, HeaderMap
+from .models import Finding, HeaderMap, SAFinding, SAHeaderMap
 from .text_utils import (
     clean_text,
     extract_date,
@@ -160,18 +160,23 @@ def extract_findings(
     return groups
 
 
-def group_verification_status_label(findings: list[Finding], hmap: HeaderMap) -> str:
+def group_verification_status_label(findings, hmap) -> str:
     """Derive a SINGLE 'Rectification Status as of <date>' column header for
-    an entire section's summary table (used by the "landscape-detail"
-    format, where the rectification/verification date is a per-TABLE column
-    header rather than a per-ROW label as in "portrait-detail").
+    an entire section's (or, for SA, the WHOLE table's) summary table (used
+    by the "landscape-detail" and "sa-detail" formats, where the
+    rectification/verification date is a per-TABLE column header rather
+    than a per-ROW label as in "portrait-detail").
 
     Convention (reusing the same date-extraction logic as the per-row
-    label): among all verification columns actually used by ANY finding in
-    this section, pick the RIGHTMOST one (i.e. the latest verification
-    round that applies to this section) and extract its date the same way
-    the portrait format does. Falls back to a generic placeholder if no
-    verification data is available for this section.
+    label): among all verification columns actually used by ANY finding/item
+    in `findings`, pick the RIGHTMOST one (i.e. the latest verification
+    round that applies) and extract its date the same way the per-row
+    label does. Falls back to a generic placeholder if no verification data
+    is available.
+
+    Works with EITHER `Finding`+`HeaderMap` (SRA) or `SAFinding`+`SAHeaderMap`
+    (SA) objects, since both expose the same `.verification_cols` /
+    `.verification_col_used` attribute names.
     """
     if not hmap.verification_cols:
         return "Rectification Status as of dd MMM yyyy"
@@ -189,3 +194,79 @@ def group_verification_status_label(findings: list[Finding], hmap: HeaderMap) ->
     elif header_text:
         return f"Rectification Status ({header_text})"
     return "Rectification Status as of dd MMM yyyy"
+
+
+# =============================================================================
+# SA (Security Audit) extraction - "SA Follow-up" table
+# =============================================================================
+
+
+def extract_sa_findings(
+    ws: Worksheet, hmap: SAHeaderMap, header_row: int, min_col: int, max_col: int, max_row: int
+) -> list[SAFinding]:
+    """Returns a FLAT list of SAFinding, in top-to-bottom order. Unlike the
+    SRA table, the SA table has no section-header rows in its spec, so no
+    grouping is performed."""
+    items: list[SAFinding] = []
+
+    for row in range(header_row + 1, max_row + 1):
+        item_id = get_val(ws, row, hmap.id_col)
+
+        row_values = [
+            get_val(ws, row, c)
+            for c in (hmap.id_col, hmap.items_col, hmap.affected_col, hmap.findings_col)
+        ]
+        if not any(row_values):
+            continue
+
+        items_to_check = split_paragraphs(ws.cell(row=row, column=hmap.items_col).value) if hmap.items_col else []
+        affected = get_val(ws, row, hmap.affected_col)
+        findings = split_paragraphs(ws.cell(row=row, column=hmap.findings_col).value) if hmap.findings_col else []
+        recommended_safeguards = split_paragraphs(ws.cell(row=row, column=hmap.recommended_safeguards_col).value) if hmap.recommended_safeguards_col else []
+
+        # Verification: take the LAST non-empty column, left-to-right (same
+        # convention as SRA - handles non-contiguous verification columns
+        # naturally, since hmap.verification_cols already lists them in
+        # left-to-right column order regardless of what's interleaved
+        # between them).
+        verification_raw = ""
+        verification_header = ""
+        verification_col_used: Optional[int] = None
+        for col, header_text in hmap.verification_cols:
+            val = get_val(ws, row, col)
+            if val:
+                verification_raw = val
+                verification_header = header_text
+                verification_col_used = col
+
+        verification_status, matched = normalize_verification_status(verification_raw)
+        if not matched:
+            warn(
+                f'Row {row} (Item "{item_id}"): unexpected verification '
+                f'status "{verification_raw}". Expected it to start with one '
+                f"of {VERIFICATION_CANONICAL_LABELS} (case-insensitive)."
+            )
+
+        date_str = extract_date(verification_header) if verification_header else None
+        if date_str:
+            verification_date_label = f"Rectification status as of {date_str}"
+        elif verification_header:
+            verification_date_label = f"Rectification status ({verification_header})"
+        else:
+            verification_date_label = "Rectification status as of dd MMM yyyy"
+
+        items.append(
+            SAFinding(
+                row=row,
+                item_id=item_id,
+                items_to_check=items_to_check,
+                affected=affected,
+                findings=findings,
+                recommended_safeguards=recommended_safeguards,
+                verification_status=verification_status,
+                verification_date_label=verification_date_label,
+                verification_col_used=verification_col_used,
+            )
+        )
+
+    return items

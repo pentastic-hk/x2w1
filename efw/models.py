@@ -47,3 +47,38 @@ class Finding:
     # "landscape-detail" format to derive a single, section-level
     # "Rectification Status as of <date>" column header.
     verification_col_used: Optional[int] = None
+
+
+@dataclass
+class SAHeaderMap:
+    """Column mapping for the "SA Follow-up" (Security Audit) table, which
+    has a different structure than the SRA "Follow-up Items"/"SRA
+    Follow-up" table: #, Items to check, Affected, Findings, Recommended
+    Safeguards, Client Response, Planned Completion Date, and one or more
+    (possibly non-contiguous) Verification columns."""
+    id_col: int
+    items_col: Optional[int] = None
+    affected_col: Optional[int] = None
+    findings_col: Optional[int] = None
+    recommended_safeguards_col: Optional[int] = None
+    # Recorded for completeness/diagnostics but NOT used in either SA
+    # output format (per spec, only # / Items / Affected / Findings /
+    # Recommendation / Rectification Status are rendered).
+    client_response_col: Optional[int] = None
+    planned_completion_date_col: Optional[int] = None
+    # list of (column_index, raw_header_text), left-to-right. May be
+    # non-contiguous (e.g. interleaved with "Client Response" columns).
+    verification_cols: list[tuple[int, str]] = field(default_factory=list)
+
+
+@dataclass
+class SAFinding:
+    row: int
+    item_id: str
+    items_to_check: list[str]
+    affected: str
+    findings: list[str]
+    recommended_safeguards: list[str]
+    verification_status: str
+    verification_date_label: str
+    verification_col_used: Optional[int] = None
