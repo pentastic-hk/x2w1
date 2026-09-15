@@ -11,7 +11,6 @@ data-extraction/rendering machinery as makes sense.
       Rows" enabled. All cell content is LEFT-aligned (not justified).
       The rectification date is derived the same way as "landscape-detail"
       (latest/rightmost non-empty verification column across ALL items).
-
     - "sa-brief": Identical styling/color-scheme/layout to "sa-detail",
       except A4 PORTRAIT and only 3 columns: #, Affected S17 Security
       Domain, Findings.

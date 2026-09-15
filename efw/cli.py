@@ -20,10 +20,13 @@ def main() -> None:
         default=None,
         help=(
             'Worksheet name to read. If omitted, the sheet is auto-detected '
-            '(case-insensitive): for SRA formats, by trying "SRA Follow-up" '
-            'first, then "Follow-up Items", before falling back to the 3rd '
-            'sheet; for SA formats ("sa-detail"/"sa-brief"), by trying '
-            '"SA Follow-up", before falling back to the 4th sheet.'
+            '(case-insensitive): for SRA formats (including "veri-summary-*"), '
+            'by trying "SRA Follow-up" first, then "Follow-up Items", before '
+            'falling back to the 3rd sheet; for SA formats ("sa-detail"/'
+            '"sa-brief"), by trying "SA Follow-up", before falling back to '
+            'the 4th sheet. Note: for "veri-summary-*" formats, this only '
+            'overrides the SRA sheet lookup - the SA sheet (if present) is '
+            'always auto-detected.'
         ),
     )
     parser.add_argument("--top-row", type=int, default=None, help="Manually override: 1-based header row")
@@ -39,8 +42,10 @@ def main() -> None:
             'Output format (default: "portrait-detail"). '
             '"portrait-detail" = A4 portrait, one detailed table per finding (SRA). '
             '"landscape-detail" = A4 landscape, one summary table per section (SRA). '
-            '"veri-summary-by-section" = A4 portrait, one combined verification-status-count table, split by section (SRA). '
-            '"veri-summary-executive" = A4 portrait, same table but combining ALL sections into a single count block (SRA). '
+            '"veri-summary-by-section" = A4 portrait, one combined verification-status-count '
+            'table (SRA sections + a final SA block), all in a SINGLE "SRA and SA" table. '
+            '"veri-summary-executive" = A4 portrait, an SRA summary table PLUS a SEPARATE SA '
+            'summary table below it (blank line between them). '
             '"sa-detail" = A4 landscape, one flat summary table of all Security Audit items. '
             '"sa-brief" = A4 portrait, same Security Audit items with fewer columns.'
         ),

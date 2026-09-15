@@ -1,11 +1,25 @@
 """The "veri-summary-by-section" and "veri-summary-executive" output
-formats: both render a single Word table (styled as the built-in
-"Grid Table 4 - Accent 6" style) containing Risk-Level x
-Rectification-Status count blocks - one block PER SECTION for
-"veri-summary-by-section", or a single block combining ALL sections for
-"veri-summary-executive". They share every styling/formatting rule and
-the row/column inclusion logic (Critical row, Partially Completed
-column), differing only in how findings are grouped into blocks.
+formats: both render Word table(s) (styled as the built-in "Grid Table 4 -
+Accent 6" style) containing Risk-Level x Rectification-Status count blocks
+for the SRA data, PLUS a Compliance-Status x Rectification-Status count
+block for the SA ("Security Audit") data:
+
+    - "veri-summary-by-section": ONE SINGLE combined table - one block PER
+      SRA SECTION, stacked in order, followed by the SA block ("Security
+      Audit") APPENDED to that SAME table, so all blocks (SRA and SA
+      alike) share an identical column structure - i.e. a single
+      "SRA and SA" verification summary table as a whole.
+
+    - "veri-summary-executive": the SRA data becomes ONE combined block in
+      ONE table (as before), and the SA data becomes a SEPARATE, second
+      table (titled "Security Audit") immediately below it, separated by a
+      single blank paragraph line.
+
+They share every styling/formatting rule and the row/column inclusion
+logic (Critical row, Partially Completed column - decided ONCE, globally,
+across BOTH the SRA and SA data so every block/table has an identical
+column set), differing only in how findings are grouped into
+blocks/tables.
 """
 
 from typing import Optional
@@ -21,6 +35,7 @@ from docx.shared import Cm, Mm
 from ..constants import BLACK_AUTO_COLOR, RISK_LEVEL_DISPLAY
 from ..diagnostics import warn
 from ..docx_utils import (
+    _add_blank_separator_paragraph,
     _apply_base_styles,
     _set_cell_fill,
     _set_cell_text,
@@ -28,7 +43,7 @@ from ..docx_utils import (
     _set_row_height,
     _set_table_column_widths,
 )
-from ..models import Finding
+from ..models import Finding, SAFinding
 from ..text_utils import normalize
 
 # =============================================================================
@@ -59,10 +74,11 @@ VERI_SUMMARY_LEADING_COLUMNS = [
 VERI_SUMMARY_STATUS_COL_WIDTH = Cm(2.6)
 
 # Fixed row height for ONLY the section title row ("Security Risk
-# Assessment - <Section>"). Uses hRule="atLeast" so the row is guaranteed
-# to be at least this tall, but will still grow if the section title text
-# ever needs more vertical space than that (e.g. a very long section name
-# that wraps onto 2 lines) - avoiding any risk of clipped/overlapping text.
+# Assessment - <Section>" / "Security Audit"). Uses hRule="atLeast" so the
+# row is guaranteed to be at least this tall, but will still grow if the
+# title text ever needs more vertical space than that (e.g. a very long
+# section name that wraps onto 2 lines) - avoiding any risk of
+# clipped/overlapping text.
 VERI_SUMMARY_TITLE_ROW_HEIGHT = Cm(0.9)
 
 # ---- "Grid Table 4 - Accent 6" built-in Word table style ----
@@ -77,11 +93,11 @@ GRID_TABLE_4_ACCENT6_STYLE_ID = "GridTable4Accent6"
 GRID_TABLE_4_ACCENT6_STYLE_NAME = "Grid Table 4 Accent 6"
 THEME_ACCENT6_HEX = "F79646"  # accent6 in python-docx's bundled "Office" theme
 
-# Hardcoded fill color for ONLY the section title row ("Security Risk
-# Assessment - <Section>"). Explicitly hardcoded per user request (rather
-# than derived from the table style/theme like the borders and banding
-# are), so it does NOT change if the attached table style's theme color
-# changes.
+# Hardcoded fill color for ONLY the section/table title row ("Security Risk
+# Assessment - <Section>" / "Security Audit"). Explicitly hardcoded per
+# user request (rather than derived from the table style/theme like the
+# borders and banding are), so it does NOT change if the attached table
+# style's theme color changes.
 VERI_SUMMARY_HEADER_FILL = "FFC000"
 
 
@@ -202,23 +218,36 @@ def _setup_a4_portrait(document: Document) -> None:
     section.bottom_margin = Cm(2.0)
 
 
-def compute_veri_summary_flags(groups: list[tuple[Optional[str], list[Finding]]]) -> tuple[bool, bool]:
-    """Scan ALL findings across ALL sections (globally, not per-section) to
-    decide once, for the WHOLE document:
+def compute_veri_summary_flags(
+    groups: list[tuple[Optional[str], list[Finding]]],
+    sa_findings: Optional[list[SAFinding]] = None,
+) -> tuple[bool, bool]:
+    """Scan ALL findings across ALL SRA sections, PLUS all SA items (if
+    provided), globally (not per-section/per-table) to decide once, for
+    the WHOLE output:
         - has_critical: whether the "Critical" risk-level row should be
-          shown (above "High") in every section's block.
+          shown (above "High") in every SRA block. SA items have no risk
+          level concept at all, so `sa_findings` never affects this flag.
         - has_partial: whether the "Partially Completed" status column
           should be shown (between "Completed" and "Incomplete") in every
-          section's block.
-    Deciding this globally (rather than per-section) keeps every section's
-    block the same shape, which is required since they all share ONE
-    table."""
+          block/table - SRA AND SA alike, since they must share an
+          identical column structure (required for
+          "veri-summary-by-section", where SRA and SA blocks live in the
+          SAME physical table; kept consistent for "veri-summary-executive"
+          too, even though its SRA/SA tables are physically separate, so
+          both formats always agree on the same column set for the same
+          input data).
+    Deciding this globally keeps every block/table the same shape."""
     has_critical = False
     has_partial = False
     for _, findings in groups:
         for f in findings:
             if normalize(f.risk_level) == "critical":
                 has_critical = True
+            if f.verification_status == "Partially Completed":
+                has_partial = True
+    if sa_findings:
+        for f in sa_findings:
             if f.verification_status == "Partially Completed":
                 has_partial = True
     return has_critical, has_partial
@@ -420,37 +449,149 @@ def add_veri_summary_section_block(
         cell.vertical_alignment = WD_ALIGN_VERTICAL.TOP
 
 
-def _setup_veri_summary_document_and_table(
-    groups: list[tuple[Optional[str], list[Finding]]],
-    title: str,
-) -> tuple[Document, object, list[str], list[str]]:
-    """Shared setup for BOTH "veri-summary-by-section" and
-    "veri-summary-executive": creates the A4-portrait document, applies base
-    styling, injects the "Grid Table 4 - Accent 6" table style, adds the
-    document title heading, computes the (globally-decided) risk-level rows
-    and status columns to use, and creates the single shared table (with
-    correct column widths) that every block will be appended onto.
+# =============================================================================
+# SA (Security Audit) summary block - shares the SAME column
+# structure/styling as the SRA blocks above, so it can be appended to the
+# SAME shared table ("veri-summary-by-section") or rendered into its own,
+# separately-styled-but-structurally-identical table
+# ("veri-summary-executive").
+# =============================================================================
 
-    Returns (document, table, risk_levels, status_columns) so callers can
-    append one or more blocks via add_veri_summary_section_block()."""
-    document = Document()
-    _apply_base_styles(document)
-    _setup_a4_portrait(document)
-    _ensure_grid_table_4_accent6_style(document)
 
-    document.add_heading(title, level=1)
+def compute_sa_summary_counts(
+    sa_findings: list[SAFinding], status_columns: list[str]
+) -> tuple[dict, int]:
+    """Returns (counts, total) for the SA "Non-compliance" row:
+        - counts[status_column] = number of SA items with that (canonical)
+          verification status.
+        - total = total number of SA items (EVERY item in the "SA
+          Follow-up" table is inherently a non-compliance finding - there
+          is no separate "not found"/"pass" category - so this is simply
+          len(sa_findings))."""
+    counts = {col: 0 for col in status_columns}
+    total = 0
+    for f in sa_findings:
+        total += 1
+        if f.verification_status in status_columns:
+            counts[f.verification_status] += 1
+    return counts, total
 
-    has_critical, has_partial = compute_veri_summary_flags(groups)
-    risk_levels = _veri_summary_risk_levels(has_critical)
-    status_columns = _veri_summary_status_columns(has_partial)
 
+def add_sa_summary_block(
+    table,
+    title_text: str,
+    sa_findings: list[SAFinding],
+    status_columns: list[str],
+) -> None:
+    """Append the SA (Security Audit) "Verification Summary" block onto the
+    END of an existing table: a title row ("Security Audit") + 2 header
+    rows ("Compliance Status" / "Number of items by Rectification Status" /
+    individual status column names) + a SINGLE "Non-compliance" data row.
+
+    Unlike the SRA blocks (which have several risk-level rows PLUS a
+    separate, final "Total" row), the SA table has only ONE compliance
+    category - every item extracted from the "SA Follow-up" sheet IS
+    (by definition) a non-compliance finding - so that single row doubles
+    as BOTH the category row AND the grand-total row, and therefore (like
+    the SRA format's Total row) has EVERY cell bold, per the reference
+    layout provided by the user.
+
+    Column count/widths/fonts/shading conventions are IDENTICAL to
+    add_veri_summary_section_block()'s SRA blocks (reusing the same
+    VERI_SUMMARY_HEADER_FILL / VERI_SUMMARY_TITLE_ROW_HEIGHT / table-style
+    banding), so this can be appended to the SAME shared table
+    ("veri-summary-by-section", producing one combined "SRA and SA" table)
+    or rendered into an equally-styled but separate table
+    ("veri-summary-executive")."""
+    counts, total = compute_sa_summary_counts(sa_findings, status_columns)
+
+    # ---- Title row (merged across all columns) - "Security Audit" ----
+    title_row = table.add_row()
+    title_cell = title_row.cells[0]
+    for c in title_row.cells[1:]:
+        title_cell = title_cell.merge(c)
+    _set_cell_text(title_cell, [title_text], bold=True, font_color=BLACK_AUTO_COLOR)
+    _set_cell_fill(title_cell, VERI_SUMMARY_HEADER_FILL)
+    title_cell.vertical_alignment = WD_ALIGN_VERTICAL.TOP
+    _set_repeat_header_row(title_row)
+    _set_row_height(title_row, VERI_SUMMARY_TITLE_ROW_HEIGHT, rule="atLeast")
+
+    # ---- Header row A + B ----
+    header_row_a = table.add_row()
+    header_row_b = table.add_row()
+
+    # "Compliance Status" - mirrors "Risk Level": bold, upper cell only.
+    _set_cell_text(header_row_a.cells[0], ["Compliance Status"], bold=True, font_color=BLACK_AUTO_COLOR)
+    header_row_a.cells[0].vertical_alignment = WD_ALIGN_VERTICAL.TOP
+    _set_cell_text(header_row_b.cells[0], [""], bold=False, font_color=BLACK_AUTO_COLOR)
+    header_row_b.cells[0].vertical_alignment = WD_ALIGN_VERTICAL.TOP
+
+    _set_cell_text(header_row_a.cells[1], [""], bold=False, font_color=BLACK_AUTO_COLOR)
+    _set_cell_text(
+        header_row_b.cells[1], ["Total"], bold=False, font_color=BLACK_AUTO_COLOR,
+        alignment=WD_ALIGN_PARAGRAPH.CENTER,
+    )
+
+    super_header_cell = header_row_a.cells[2]
+    for c in header_row_a.cells[3:]:
+        super_header_cell = super_header_cell.merge(c)
+    _set_cell_text(
+        super_header_cell, ["Number of items by Rectification Status"],
+        bold=False, font_color=BLACK_AUTO_COLOR,
+    )
+
+    for i, col_name in enumerate(status_columns):
+        cell = header_row_b.cells[2 + i]
+        _set_cell_text(
+            cell, [col_name], bold=False, font_color=BLACK_AUTO_COLOR,
+            alignment=WD_ALIGN_PARAGRAPH.CENTER,
+        )
+        cell.vertical_alignment = WD_ALIGN_VERTICAL.TOP
+
+    # ---- Single "Non-compliance" row: EVERY cell bold (it doubles as the
+    # category AND the grand-total row) - shading left to the table style,
+    # exactly like the SRA Total row. ----
+    data_row = table.add_row()
+    label_cell = data_row.cells[0]
+    _set_cell_text(label_cell, ["Non-compliance"], bold=True, font_color=BLACK_AUTO_COLOR)
+    label_cell.vertical_alignment = WD_ALIGN_VERTICAL.TOP
+
+    total_cell = data_row.cells[1]
+    _set_cell_text(
+        total_cell, [str(total)], bold=True, font_color=BLACK_AUTO_COLOR,
+        alignment=WD_ALIGN_PARAGRAPH.CENTER,
+    )
+    total_cell.vertical_alignment = WD_ALIGN_VERTICAL.TOP
+
+    for j, col in enumerate(status_columns):
+        cell = data_row.cells[2 + j]
+        _set_cell_text(
+            cell, [str(counts[col])], bold=True, font_color=BLACK_AUTO_COLOR,
+            alignment=WD_ALIGN_PARAGRAPH.CENTER,
+        )
+        cell.vertical_alignment = WD_ALIGN_VERTICAL.TOP
+
+
+# =============================================================================
+# Shared document/table setup
+# =============================================================================
+
+
+def _create_veri_summary_table(document: Document, status_columns: list[str]):
+    """Create a new, empty (correctly-styled and correctly-sized) "Grid
+    Table 4 - Accent 6" table on the given document, ready for blocks to be
+    appended via add_veri_summary_section_block() / add_sa_summary_block().
+
+    Used both for the FIRST table added to a document, and - in
+    "veri-summary-executive" - for the SEPARATE second table that holds the
+    SA block below the SRA table."""
     n_status_cols = len(status_columns)
     n_cols = 2 + n_status_cols
     column_widths = [w for _, w in VERI_SUMMARY_LEADING_COLUMNS] + [VERI_SUMMARY_STATUS_COL_WIDTH] * n_status_cols
 
     # Start with a single throwaway row (python-docx requires >=1 row to
     # create a table); we remove it immediately since every block appends
-    # its own rows via add_veri_summary_section_block().
+    # its own rows via add_veri_summary_section_block()/add_sa_summary_block().
     table = document.add_table(rows=1, cols=n_cols)
     table.style = GRID_TABLE_4_ACCENT6_STYLE_NAME
     table.autofit = False
@@ -458,18 +599,59 @@ def _setup_veri_summary_document_and_table(
     placeholder_row_element = table.rows[0]._tr
     placeholder_row_element.getparent().remove(placeholder_row_element)
 
+    return table
+
+
+def _setup_veri_summary_document_and_table(
+    groups: list[tuple[Optional[str], list[Finding]]],
+    title: str,
+    sa_findings: Optional[list[SAFinding]] = None,
+) -> tuple[Document, object, list[str], list[str]]:
+    """Shared setup: creates the A4-portrait document, applies base
+    styling, injects the "Grid Table 4 - Accent 6" table style, adds the
+    document title heading, computes the (globally-decided, across BOTH
+    SRA and SA data) risk-level rows and status columns to use, and
+    creates the single shared table (with correct column widths) that the
+    first block(s) will be appended onto.
+
+    Returns (document, table, risk_levels, status_columns) so callers can
+    append one or more blocks via add_veri_summary_section_block() /
+    add_sa_summary_block(), and/or create additional tables via
+    _create_veri_summary_table(document, status_columns) using the SAME
+    status_columns (so every table in the document stays aligned)."""
+    document = Document()
+    _apply_base_styles(document)
+    _setup_a4_portrait(document)
+    _ensure_grid_table_4_accent6_style(document)
+
+    document.add_heading(title, level=1)
+
+    has_critical, has_partial = compute_veri_summary_flags(groups, sa_findings)
+    risk_levels = _veri_summary_risk_levels(has_critical)
+    status_columns = _veri_summary_status_columns(has_partial)
+
+    table = _create_veri_summary_table(document, status_columns)
+
     return document, table, risk_levels, status_columns
 
 
 def build_veri_summary_document(
     groups: list[tuple[Optional[str], list[Finding]]],
     title: str,
+    sa_findings: Optional[list[SAFinding]] = None,
 ) -> Document:
-    """Build the "veri-summary-by-section" output: A4 portrait, ONE combined
-    table (styled as Word's built-in "Grid Table 4 - Accent 6") containing
-    one compact Risk-Level x Rectification-Status count block PER SECTION,
-    reusing the same Finding data produced by extract_findings()."""
-    document, table, risk_levels, status_columns = _setup_veri_summary_document_and_table(groups, title)
+    """Build the "veri-summary-by-section" output: A4 portrait, ONE SINGLE
+    combined table (styled as Word's built-in "Grid Table 4 - Accent 6")
+    containing one compact Risk-Level x Rectification-Status count block
+    PER SRA SECTION, reusing the same Finding data produced by
+    extract_findings() - PLUS, if `sa_findings` is provided, the SA
+    ("Security Audit") Compliance-Status x Rectification-Status block
+    APPENDED onto that SAME table (so the whole "SRA and SA" verification
+    summary is rendered as a single table with an identical column
+    structure throughout)."""
+    document, table, risk_levels, status_columns = _setup_veri_summary_document_and_table(
+        groups, title, sa_findings=sa_findings
+    )
 
     total = 0
     for section_title, findings in groups:
@@ -478,6 +660,10 @@ def build_veri_summary_document(
         block_title = f"Security Risk Assessment - {section_title or 'Findings'}"
         add_veri_summary_section_block(table, block_title, findings, risk_levels, status_columns)
         total += len(findings)
+
+    if sa_findings:
+        add_sa_summary_block(table, "Security Audit", sa_findings, status_columns)
+        total += len(sa_findings)
 
     if total == 0:
         warn("No findings were extracted - the output document will be empty of tables.")
@@ -488,18 +674,28 @@ def build_veri_summary_document(
 def build_veri_summary_executive_document(
     groups: list[tuple[Optional[str], list[Finding]]],
     title: str,
+    sa_findings: Optional[list[SAFinding]] = None,
 ) -> Document:
     """Build the "veri-summary-executive" output: identical styling,
     coloring, and row/column logic to "veri-summary-by-section", EXCEPT
-    that findings from ALL sections are combined into a SINGLE Risk-Level x
-    Rectification-Status count block (section boundaries are ignored - the
-    counts simply cover every finding in the workbook), and that block's
-    title is plainly "Security Risk Assessment" (no " - <Section>" suffix).
+    that findings from ALL SRA sections are combined into a SINGLE
+    Risk-Level x Rectification-Status count block (section boundaries are
+    ignored - the counts simply cover every SRA finding in the workbook),
+    rendered in its own table titled plainly "Security Risk Assessment"
+    (no " - <Section>" suffix).
+
+    If `sa_findings` is provided, the SA ("Security Audit") summary is
+    rendered as a SECOND, SEPARATE table (NOT appended to the SRA table),
+    titled "Security Audit", with a single blank paragraph line separating
+    the two tables.
 
     The "Critical" row / "Partially Completed" column inclusion decision
-    (via compute_veri_summary_flags()) is unaffected by this change, since
-    it was already computed globally across all findings/sections."""
-    document, table, risk_levels, status_columns = _setup_veri_summary_document_and_table(groups, title)
+    (via compute_veri_summary_flags()) is computed ONCE across BOTH the SRA
+    and SA data, so the two separate tables still share an identical
+    column structure."""
+    document, table, risk_levels, status_columns = _setup_veri_summary_document_and_table(
+        groups, title, sa_findings=sa_findings
+    )
 
     # Combine every finding from every section into one flat list - section
     # boundaries are intentionally NOT preserved for this format.
@@ -507,7 +703,13 @@ def build_veri_summary_executive_document(
 
     if all_findings:
         add_veri_summary_section_block(table, "Security Risk Assessment", all_findings, risk_levels, status_columns)
-    else:
+    elif not sa_findings:
         warn("No findings were extracted - the output document will be empty of tables.")
+
+    if sa_findings:
+        # SEPARATE table, one blank line below the SRA table.
+        _add_blank_separator_paragraph(document)
+        sa_table = _create_veri_summary_table(document, status_columns)
+        add_sa_summary_block(sa_table, "Security Audit", sa_findings, status_columns)
 
     return document
