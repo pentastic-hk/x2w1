@@ -24,6 +24,13 @@ output FORMATS, selected via --format:
       Risk-Level x Rectification-Status count block PER SECTION, stacked in
       order - i.e. a "Verification Summary per Section" table.
 
+    - "veri-summary-executive": Identical to "veri-summary-by-section" in
+      every respect (styling, coloring, row/column logic) EXCEPT that ALL
+      findings from every section are combined into a SINGLE count block
+      (section boundaries are ignored), with its title simply
+      "Security Risk Assessment" (no " - <Section>" suffix) - i.e. an
+      executive-level, workbook-wide "Verification Summary" table.
+
 -------------------------------------------------------------------------
 HOW IT LOCATES THE DATA
 -------------------------------------------------------------------------
@@ -185,6 +192,24 @@ WORD TABLE STYLING - "veri-summary-by-section" format
       block has an identical column/row shape.
 
 -------------------------------------------------------------------------
+WORD TABLE STYLING - "veri-summary-executive" format
+-------------------------------------------------------------------------
+    - Identical to "veri-summary-by-section" in EVERY styling/formatting
+      respect (page setup, table style, borders/banding, bold placement,
+      alignment, Critical row / Partially Completed column inclusion
+      logic) - see above.
+    - The ONLY difference: instead of one block per section, ALL findings
+      across ALL sections are combined into a SINGLE Risk-Level x
+      Rectification-Status count block (section boundaries such as
+      "General Control Review", "Vulnerability Scanning", "Web Penetration
+      Testing", "API Penetration Testing", "Agent Penetration Testing",
+      etc. are NOT used to split the counts).
+    - That single block's title row reads plainly "Security Risk
+      Assessment" - WITHOUT the hyphen and section name suffix used by
+      "veri-summary-by-section" (e.g. NOT "Security Risk Assessment -
+      General Control Review").
+
+-------------------------------------------------------------------------
 USAGE
 -------------------------------------------------------------------------
     python excel_to_word_findings.py input.xlsx
@@ -193,18 +218,21 @@ USAGE
     python excel_to_word_findings.py input.xlsx --format landscape-detail
     python excel_to_word_findings.py input.xlsx --format landscape-detail --section-number 9
     python excel_to_word_findings.py input.xlsx --format veri-summary-by-section
+    python excel_to_word_findings.py input.xlsx --format veri-summary-executive
     python excel_to_word_findings.py input.xlsx --debug
 
 --format accepts a string enum (not a boolean), so more formats can be
 added later without breaking the CLI:
     - "portrait-detail"          (default) - one detailed table per finding, A4 portrait.
     - "landscape-detail"         - one summary table per section, A4 landscape.
-    - "veri-summary-by-section"  - one combined verification-status-count table, A4 portrait.
+    - "veri-summary-by-section"  - one combined verification-status-count table, split by section, A4 portrait.
+    - "veri-summary-executive"   - same table, but combining ALL sections into a single count block, A4 portrait.
 
 --section-number sets the base report section number used to auto-number
 section headings in "landscape-detail" (default: "9", producing "9.1",
 "9.2", "9.3", ... in the order sections appear in the workbook). Ignored
-for "portrait-detail" and "veri-summary-by-section".
+for "portrait-detail", "veri-summary-by-section", and
+"veri-summary-executive".
 
 OUTPUT FILENAME: the --format id is appended as a suffix to the output
 filename, immediately before the file extension - but ONLY when the output
@@ -257,7 +285,13 @@ DEFAULT_SHEET_INDEX_FALLBACK = 2  # zero-based -> 3rd sheet
 FORMAT_PORTRAIT_DETAIL = "portrait-detail"
 FORMAT_LANDSCAPE_DETAIL = "landscape-detail"
 FORMAT_VERI_SUMMARY_BY_SECTION = "veri-summary-by-section"
-OUTPUT_FORMATS = [FORMAT_PORTRAIT_DETAIL, FORMAT_LANDSCAPE_DETAIL, FORMAT_VERI_SUMMARY_BY_SECTION]
+FORMAT_VERI_SUMMARY_EXECUTIVE = "veri-summary-executive"
+OUTPUT_FORMATS = [
+    FORMAT_PORTRAIT_DETAIL,
+    FORMAT_LANDSCAPE_DETAIL,
+    FORMAT_VERI_SUMMARY_BY_SECTION,
+    FORMAT_VERI_SUMMARY_EXECUTIVE,
+]
 DEFAULT_OUTPUT_FORMAT = FORMAT_PORTRAIT_DETAIL
 
 DEFAULT_SECTION_NUMBER = "9"
@@ -1589,28 +1623,34 @@ def _veri_summary_numeric_col_indices(n_status_cols: int) -> list[int]:
 
 def add_veri_summary_section_block(
     table,
-    section_title: str,
+    title_text: str,
     findings: list[Finding],
     risk_levels: list[str],
     status_columns: list[str],
 ) -> None:
-    """Append ONE section's "Verification Summary" block (title row + 2
-    header rows + risk-level rows + Total row) onto the END of an existing,
-    shared table.
+    """Append ONE "Verification Summary" block (title row + 2 header rows +
+    risk-level rows + Total row) onto the END of an existing, shared table.
 
-    ONLY the title row ("Security Risk Assessment - <Section>") gets the
-    solid header fill (hardcoded to VERI_SUMMARY_HEADER_FILL, per user
-    request), a FIXED row height (VERI_SUMMARY_TITLE_ROW_HEIGHT), and is
-    marked as a repeating header row. The 2 header-label rows below it
-    ("Risk Level" / "Number of items by Rectification Status" / individual
-    status column names) are deliberately left WITHOUT any explicit
-    shading, WITHOUT a fixed height, and WITHOUT the repeating-header flag,
-    so they - like the risk-level data rows and the Total row - simply
-    inherit the attached "Grid Table 4 - Accent 6" table style's own
-    alternating band1Horz shading (pale orange / no-fill) based on their
-    absolute position in the table. This shading continues seamlessly
-    across section boundaries (verified empirically - see module
-    docstring)."""
+    `title_text` is used VERBATIM as the title row's text - callers are
+    responsible for formatting it (e.g. "Security Risk Assessment - <Section>"
+    for the per-section format, or plain "Security Risk Assessment" for the
+    executive/combined format), so this function can be shared by both
+    "veri-summary-by-section" (one block per section) and
+    "veri-summary-executive" (a single block covering ALL findings combined,
+    ignoring section boundaries).
+
+    ONLY the title row gets the solid header fill (hardcoded to
+    VERI_SUMMARY_HEADER_FILL, per user request), a FIXED row height
+    (VERI_SUMMARY_TITLE_ROW_HEIGHT), and is marked as a repeating header
+    row. The 2 header-label rows below it ("Risk Level" / "Number of items
+    by Rectification Status" / individual status column names) are
+    deliberately left WITHOUT any explicit shading, WITHOUT a fixed height,
+    and WITHOUT the repeating-header flag, so they - like the risk-level
+    data rows and the Total row - simply inherit the attached "Grid Table 4
+    - Accent 6" table style's own alternating band1Horz shading (pale
+    orange / no-fill) based on their absolute position in the table. This
+    shading continues seamlessly across section boundaries (verified
+    empirically - see module docstring)."""
     counts, totals = _count_section_by_risk_and_status(findings, risk_levels, status_columns)
     n_status_cols = len(status_columns)
     n_cols = 2 + n_status_cols
@@ -1624,7 +1664,7 @@ def add_veri_summary_section_block(
     for c in title_row.cells[1:]:
         title_cell = title_cell.merge(c)
     _set_cell_text(
-        title_cell, [f"Security Risk Assessment - {section_title}"],
+        title_cell, [title_text],
         bold=True, font_color=BLACK_AUTO_COLOR,
     )
     _set_cell_fill(title_cell, VERI_SUMMARY_HEADER_FILL)
@@ -1728,14 +1768,19 @@ def add_veri_summary_section_block(
         cell.vertical_alignment = WD_ALIGN_VERTICAL.TOP
 
 
-def build_veri_summary_document(
+def _setup_veri_summary_document_and_table(
     groups: list[tuple[Optional[str], list[Finding]]],
     title: str,
-) -> Document:
-    """Build the "veri-summary-by-section" output: A4 portrait, ONE combined
-    table (styled as Word's built-in "Grid Table 4 - Accent 6") containing
-    one compact Risk-Level x Rectification-Status count block PER SECTION,
-    reusing the same Finding data produced by extract_findings()."""
+) -> tuple[Document, object, list[str], list[str]]:
+    """Shared setup for BOTH "veri-summary-by-section" and
+    "veri-summary-executive": creates the A4-portrait document, applies base
+    styling, injects the "Grid Table 4 - Accent 6" table style, adds the
+    document title heading, computes the (globally-decided) risk-level rows
+    and status columns to use, and creates the single shared table (with
+    correct column widths) that every block will be appended onto.
+
+    Returns (document, table, risk_levels, status_columns) so callers can
+    append one or more blocks via add_veri_summary_section_block()."""
     document = Document()
     _apply_base_styles(document)
     _setup_a4_portrait(document)
@@ -1752,8 +1797,8 @@ def build_veri_summary_document(
     column_widths = [w for _, w in VERI_SUMMARY_LEADING_COLUMNS] + [VERI_SUMMARY_STATUS_COL_WIDTH] * n_status_cols
 
     # Start with a single throwaway row (python-docx requires >=1 row to
-    # create a table); we remove it immediately since every section's
-    # block appends its own rows via add_veri_summary_section_block().
+    # create a table); we remove it immediately since every block appends
+    # its own rows via add_veri_summary_section_block().
     table = document.add_table(rows=1, cols=n_cols)
     table.style = GRID_TABLE_4_ACCENT6_STYLE_NAME
     table.autofit = False
@@ -1761,14 +1806,56 @@ def build_veri_summary_document(
     placeholder_row_element = table.rows[0]._tr
     placeholder_row_element.getparent().remove(placeholder_row_element)
 
+    return document, table, risk_levels, status_columns
+
+
+def build_veri_summary_document(
+    groups: list[tuple[Optional[str], list[Finding]]],
+    title: str,
+) -> Document:
+    """Build the "veri-summary-by-section" output: A4 portrait, ONE combined
+    table (styled as Word's built-in "Grid Table 4 - Accent 6") containing
+    one compact Risk-Level x Rectification-Status count block PER SECTION,
+    reusing the same Finding data produced by extract_findings()."""
+    document, table, risk_levels, status_columns = _setup_veri_summary_document_and_table(groups, title)
+
     total = 0
     for section_title, findings in groups:
         if not findings:
             continue
-        add_veri_summary_section_block(table, section_title or "Findings", findings, risk_levels, status_columns)
+        block_title = f"Security Risk Assessment - {section_title or 'Findings'}"
+        add_veri_summary_section_block(table, block_title, findings, risk_levels, status_columns)
         total += len(findings)
 
     if total == 0:
+        warn("No findings were extracted - the output document will be empty of tables.")
+
+    return document
+
+
+def build_veri_summary_executive_document(
+    groups: list[tuple[Optional[str], list[Finding]]],
+    title: str,
+) -> Document:
+    """Build the "veri-summary-executive" output: identical styling,
+    coloring, and row/column logic to "veri-summary-by-section", EXCEPT
+    that findings from ALL sections are combined into a SINGLE Risk-Level x
+    Rectification-Status count block (section boundaries are ignored - the
+    counts simply cover every finding in the workbook), and that block's
+    title is plainly "Security Risk Assessment" (no " - <Section>" suffix).
+
+    The "Critical" row / "Partially Completed" column inclusion decision
+    (via compute_veri_summary_flags()) is unaffected by this change, since
+    it was already computed globally across all findings/sections."""
+    document, table, risk_levels, status_columns = _setup_veri_summary_document_and_table(groups, title)
+
+    # Combine every finding from every section into one flat list - section
+    # boundaries are intentionally NOT preserved for this format.
+    all_findings = [f for _, findings in groups for f in findings]
+
+    if all_findings:
+        add_veri_summary_section_block(table, "Security Risk Assessment", all_findings, risk_levels, status_columns)
+    else:
         warn("No findings were extracted - the output document will be empty of tables.")
 
     return document
@@ -1824,6 +1911,8 @@ def convert(
         )
     elif output_format == FORMAT_VERI_SUMMARY_BY_SECTION:
         document = build_veri_summary_document(groups, title="Verification Summary by Section")
+    elif output_format == FORMAT_VERI_SUMMARY_EXECUTIVE:
+        document = build_veri_summary_executive_document(groups, title="Verification Summary (Executive)")
     else:
         document = build_document(groups, title="Follow-up Findings")
 
@@ -1872,7 +1961,8 @@ def main() -> None:
             'Output format (default: "portrait-detail"). '
             '"portrait-detail" = A4 portrait, one detailed table per finding. '
             '"landscape-detail" = A4 landscape, one summary table per section. '
-            '"veri-summary-by-section" = A4 portrait, one combined verification-status-count table.'
+            '"veri-summary-by-section" = A4 portrait, one combined verification-status-count table, split by section. '
+            '"veri-summary-executive" = A4 portrait, same table but combining ALL sections into a single count block.'
         ),
     )
     parser.add_argument(
@@ -1881,7 +1971,7 @@ def main() -> None:
         help=(
             'Base report section number used to auto-number section headings '
             'in "landscape-detail" (default: "9", producing "9.1", "9.2", ...). '
-            'Ignored for "portrait-detail" and "veri-summary-by-section".'
+            'Ignored for "portrait-detail", "veri-summary-by-section", and "veri-summary-executive".'
         ),
     )
     parser.add_argument("--debug", action="store_true", help="Print diagnostic information while converting")
