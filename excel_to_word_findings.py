@@ -206,13 +206,15 @@ section headings in "landscape-detail" (default: "9", producing "9.1",
 "9.2", "9.3", ... in the order sections appear in the workbook). Ignored
 for "portrait-detail" and "veri-summary-by-section".
 
-OUTPUT FILENAME: the --format id is ALWAYS appended as a suffix to the
-output filename, immediately before the file extension - regardless of
-whether the output path was auto-derived from the input filename or
-explicitly provided. For example, "QC FUP v1.2.xlsx" run with
---format landscape-detail produces "QC FUP v1.2-landscape-detail.docx"
-(and, similarly, an explicitly-provided "report.docx" would become
-"report-landscape-detail.docx").
+OUTPUT FILENAME: the --format id is appended as a suffix to the output
+filename, immediately before the file extension - but ONLY when the output
+filename is auto-derived from the input filename (i.e. no explicit output
+argument was given). For example, "QC FUP v1.2.xlsx" run with
+--format landscape-detail (no output argument) produces
+"QC FUP v1.2-landscape-detail.docx". If you explicitly provide an output
+filename (e.g. "python excel_to_word_findings.py input.xlsx report.docx
+--format landscape-detail"), that exact filename ("report.docx") is used
+as-is, with NO suffix appended.
 
 Manual overrides (use if auto-detection of the table picks the wrong
 region - e.g. if other bordered cells exist elsewhere on the sheet):
@@ -316,10 +318,11 @@ def append_format_suffix(output_path: Path, output_format: str) -> Path:
     before the file extension - e.g. "QC FUP v1.2.docx" with
     output_format="landscape-detail" becomes "QC FUP v1.2-landscape-detail.docx".
 
-    Applied unconditionally to whatever output path is ultimately used
-    (whether auto-derived from the input filename or explicitly provided),
-    so the format used to generate a given .docx is always evident from its
-    filename alone."""
+    Only applied when the output filename was AUTO-DERIVED from the input
+    filename (i.e. the user did not explicitly provide an output filename).
+    If the user explicitly names the output file, that name is used exactly
+    as given, with no suffix appended - see the `output_explicit` parameter
+    of convert()."""
     return output_path.with_name(f"{output_path.stem}-{output_format}{output_path.suffix}")
 
 
@@ -1787,6 +1790,7 @@ def convert(
     output_format: str = DEFAULT_OUTPUT_FORMAT,
     section_number: str = DEFAULT_SECTION_NUMBER,
     debug: bool = False,
+    output_explicit: bool = False,
 ) -> None:
     wb = openpyxl.load_workbook(input_path, data_only=True)
     ws = load_sheet(wb, sheet_name)
@@ -1823,7 +1827,12 @@ def convert(
     else:
         document = build_document(groups, title="Follow-up Findings")
 
-    output_path = append_format_suffix(output_path, output_format)
+    # Only auto-append the "-<format>" suffix when the output filename was
+    # NOT explicitly provided by the user (i.e. it was auto-derived from the
+    # input filename). If the user explicitly named the output file, honor
+    # that name exactly as given.
+    if not output_explicit:
+        output_path = append_format_suffix(output_path, output_format)
     document.save(output_path)
 
     print(f"Saved: {output_path}")
@@ -1878,6 +1887,7 @@ def main() -> None:
     parser.add_argument("--debug", action="store_true", help="Print diagnostic information while converting")
     args = parser.parse_args()
 
+    output_explicit = args.output is not None
     output = args.output or args.input.with_suffix(".docx")
 
     convert(
@@ -1889,6 +1899,7 @@ def main() -> None:
         bottom_row=args.bottom_row,
         right_col=args.right_col,
         output_format=args.output_format,
+        output_explicit=output_explicit,
         section_number=args.section_number,
         debug=args.debug,
     )
