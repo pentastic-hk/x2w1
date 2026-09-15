@@ -42,6 +42,8 @@ def main() -> None:
             'Output format (default: "portrait-detail"). '
             '"portrait-detail" = A4 portrait, one detailed table per finding (SRA). '
             '"landscape-detail" = A4 landscape, one summary table per section (SRA). '
+            '"sra-brief" = A4 portrait, ONE flat table of all SRA findings with only '
+            '#/Findings/Risk Level columns, grouped under bold section-header rows. '
             '"veri-summary-by-section" = A4 portrait, one combined verification-status-count '
             'table (SRA sections + a final SA block), all in a SINGLE "SRA and SA" table. '
             '"veri-summary-executive" = A4 portrait, an SRA summary table PLUS a SEPARATE SA '

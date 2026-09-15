@@ -17,6 +17,7 @@ from .constants import (
     FORMAT_LANDSCAPE_DETAIL,
     FORMAT_SA_BRIEF,
     FORMAT_SA_DETAIL,
+    FORMAT_SRA_BRIEF,
     FORMAT_VERI_SUMMARY_BY_SECTION,
     FORMAT_VERI_SUMMARY_EXECUTIVE,
     SA_SHEET_INDEX_FALLBACK,
@@ -27,6 +28,7 @@ from .extraction import extract_findings, extract_sa_findings
 from .formats.landscape_detail import build_landscape_document
 from .formats.portrait_detail import build_document
 from .formats.sa import build_sa_brief_document, build_sa_detail_document
+from .formats.sra_brief import build_sra_brief_document
 from .formats.veri_summary import (
     build_veri_summary_document,
     build_veri_summary_executive_document,
@@ -184,6 +186,8 @@ def convert(
             document = build_landscape_document(
                 groups, hmap, title="Follow-up Findings", section_base_number=section_number
             )
+        elif output_format == FORMAT_SRA_BRIEF:
+            document = build_sra_brief_document(groups, title="Follow-up Findings (Brief)")
         elif output_format in _VERI_SUMMARY_FORMATS:
             # ---- Combined SRA + SA pipeline for the verification summary
             # formats: additionally load the SA half of the report (best

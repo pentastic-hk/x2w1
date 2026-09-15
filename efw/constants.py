@@ -25,6 +25,7 @@ SA_SHEET_INDEX_FALLBACK = 3  # zero-based -> 4th sheet
 # added later without changing the CLI shape).
 FORMAT_PORTRAIT_DETAIL = "portrait-detail"
 FORMAT_LANDSCAPE_DETAIL = "landscape-detail"
+FORMAT_SRA_BRIEF = "sra-brief"
 FORMAT_VERI_SUMMARY_BY_SECTION = "veri-summary-by-section"
 FORMAT_VERI_SUMMARY_EXECUTIVE = "veri-summary-executive"
 FORMAT_SA_DETAIL = "sa-detail"
@@ -32,6 +33,7 @@ FORMAT_SA_BRIEF = "sa-brief"
 OUTPUT_FORMATS = [
     FORMAT_PORTRAIT_DETAIL,
     FORMAT_LANDSCAPE_DETAIL,
+    FORMAT_SRA_BRIEF,
     FORMAT_VERI_SUMMARY_BY_SECTION,
     FORMAT_VERI_SUMMARY_EXECUTIVE,
     FORMAT_SA_DETAIL,
@@ -87,5 +89,10 @@ RISK_LEVEL_DISPLAY = {
     "low": "Low",
     "ofi": "OFI",
 }
+
+# Standard MS Word theme swatch "Blue, Accent 1, Lighter 80%" (Office theme:
+# accent1 = 4472C4, tinted 80% toward white). Used ONLY for the section
+# header rows in the "sra-brief" format.
+SRA_BRIEF_SECTION_FILL = "D9E2F3"
 
 WARNINGS: list[str] = []
