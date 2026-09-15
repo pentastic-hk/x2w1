@@ -15,20 +15,29 @@ from docx.shared import RGBColor
 DEFAULT_SHEET_NAME_CANDIDATES = ["SRA Follow-up", "Follow-up Items"]
 DEFAULT_SHEET_INDEX_FALLBACK = 2  # zero-based -> 3rd sheet
 
+# Candidate sheet name(s) for the SA (Security Audit) half of the report,
+# tried case-insensitively; falls back to the 4th sheet (zero-based index 3)
+# if not found.
+DEFAULT_SA_SHEET_NAME_CANDIDATES = ["SA Follow-up"]
+SA_SHEET_INDEX_FALLBACK = 3  # zero-based -> 4th sheet
+
 # Output format enum (string values, NOT a boolean, so more formats can be
 # added later without changing the CLI shape).
 FORMAT_PORTRAIT_DETAIL = "portrait-detail"
 FORMAT_LANDSCAPE_DETAIL = "landscape-detail"
 FORMAT_VERI_SUMMARY_BY_SECTION = "veri-summary-by-section"
 FORMAT_VERI_SUMMARY_EXECUTIVE = "veri-summary-executive"
+FORMAT_SA_DETAIL = "sa-detail"
+FORMAT_SA_BRIEF = "sa-brief"
 OUTPUT_FORMATS = [
     FORMAT_PORTRAIT_DETAIL,
     FORMAT_LANDSCAPE_DETAIL,
     FORMAT_VERI_SUMMARY_BY_SECTION,
     FORMAT_VERI_SUMMARY_EXECUTIVE,
+    FORMAT_SA_DETAIL,
+    FORMAT_SA_BRIEF,
 ]
 DEFAULT_OUTPUT_FORMAT = FORMAT_PORTRAIT_DETAIL
-
 DEFAULT_SECTION_NUMBER = "9"
 
 RISK_LEVELS = {"critical", "high", "medium", "low", "ofi"}

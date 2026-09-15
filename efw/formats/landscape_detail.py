@@ -203,7 +203,6 @@ def build_landscape_document(
     document = Document()
     _apply_base_styles(document)
     _setup_a4_landscape(document)
-
     document.add_heading(title, level=1)
 
     # Decided ONCE for the whole document (not per-section), so every
@@ -217,7 +216,6 @@ def build_landscape_document(
     for section_title, findings in groups:
         if not findings:
             continue
-
         subsection_index += 1
         heading_text = f"{section_base_number}.{subsection_index} {section_title or 'Findings'}"
         document.add_heading(heading_text, level=2)

@@ -10,28 +10,42 @@ from openpyxl.worksheet.worksheet import Worksheet
 
 from .constants import DEFAULT_SHEET_NAME_CANDIDATES, DEFAULT_SHEET_INDEX_FALLBACK
 from .diagnostics import warn
-from .models import HeaderMap
-from .text_utils import clean_text, normalize
+from .models import HeaderMap, SAHeaderMap
+from .text_utils import clean_text, normalize, normalize_singular
 
 # =============================================================================
 # Step 1-2: locate worksheet + table bounding box (via borders)
 # =============================================================================
 
 
-def load_sheet(wb: openpyxl.Workbook, sheet_name: Optional[str] = None) -> Worksheet:
+def load_sheet(
+    wb: openpyxl.Workbook,
+    sheet_name: Optional[str] = None,
+    candidates: Optional[list[str]] = None,
+    fallback_index: Optional[int] = None,
+) -> Worksheet:
     """Locate the worksheet to read from.
 
     - If `sheet_name` is given (e.g. via --sheet), it is the ONLY candidate
-      tried (case-insensitive exact match), before falling back to the 3rd
-      sheet.
+      tried (case-insensitive exact match), before falling back to the
+      fallback sheet.
     - If `sheet_name` is None (the default - no explicit --sheet override),
-      candidates from DEFAULT_SHEET_NAME_CANDIDATES are tried IN ORDER
-      (case-insensitive): "SRA Follow-up" first, then "Follow-up Items",
-      before falling back to the 3rd sheet.
+      `candidates` are tried IN ORDER (case-insensitive), before falling
+      back to the sheet at `fallback_index`.
+    - `candidates`/`fallback_index` default to the SRA ("SRA Follow-up" /
+      "Follow-up Items", 3rd sheet) values for backward compatibility, so
+      existing callers are unaffected. Pass DEFAULT_SA_SHEET_NAME_CANDIDATES
+      / SA_SHEET_INDEX_FALLBACK (from .constants) to locate the SA
+      ("SA Follow-up", 4th sheet) table instead.
     """
-    candidates = [sheet_name] if sheet_name else DEFAULT_SHEET_NAME_CANDIDATES
+    if candidates is None:
+        candidates = DEFAULT_SHEET_NAME_CANDIDATES
+    if fallback_index is None:
+        fallback_index = DEFAULT_SHEET_INDEX_FALLBACK
 
-    for candidate in candidates:
+    actual_candidates = [sheet_name] if sheet_name else candidates
+
+    for candidate in actual_candidates:
         if candidate in wb.sheetnames:
             return wb[candidate]
         # case-insensitive match
@@ -39,20 +53,20 @@ def load_sheet(wb: openpyxl.Workbook, sheet_name: Optional[str] = None) -> Works
             if name.strip().lower() == candidate.strip().lower():
                 return wb[name]
 
-    if len(wb.sheetnames) > DEFAULT_SHEET_INDEX_FALLBACK:
-        fallback = wb.sheetnames[DEFAULT_SHEET_INDEX_FALLBACK]
-        tried = " / ".join(f'"{c}"' for c in candidates)
+    if len(wb.sheetnames) > fallback_index:
+        fallback = wb.sheetnames[fallback_index]
+        tried = " / ".join(f'"{c}"' for c in actual_candidates)
         warn(
             f"None of the candidate sheet name(s) {tried} were found. "
-            f'Falling back to the 3rd sheet: "{fallback}".'
+            f'Falling back to sheet #{fallback_index + 1}: "{fallback}".'
         )
         return wb[fallback]
 
-    tried = " / ".join(f'"{c}"' for c in candidates)
+    tried = " / ".join(f'"{c}"' for c in actual_candidates)
     raise ValueError(
         f"None of the candidate sheet name(s) {tried} were found, and the "
-        f"workbook has fewer than 3 sheets to fall back to. "
-        f"Available sheets: {wb.sheetnames}"
+        f"workbook has fewer than {fallback_index + 1} sheets to fall back "
+        f"to. Available sheets: {wb.sheetnames}"
     )
 
 
@@ -183,3 +197,69 @@ def section_title_for_row(ws: Worksheet, row: int, min_col: int, max_col: int) -
                 anchor = ws.cell(row=mc.min_row, column=mc.min_col).value
                 return clean_text(anchor)
     return None
+
+
+# =============================================================================
+# SA (Security Audit) header mapping - "SA Follow-up" table
+# =============================================================================
+#
+# The SA table's columns are identified case-insensitively by label, with
+# TOLERANCE for headers that freely include or omit a trailing plural 's'
+# (e.g. "Items to check" vs "Item to check", "Recommended Safeguards" vs
+# "Recommended Safeguard") - see text_utils.normalize_singular(). Extra
+# columns (e.g. "Client Response", "Planned Completion Date") may appear
+# between "Recommended Safeguards" and the Verification column(s); these
+# are recorded (for completeness/diagnostics) but are NOT used in either SA
+# output format. Verification columns may be NON-CONTIGUOUS (interleaved
+# with "Client Response" columns re-appearing between verification rounds),
+# which this function accommodates naturally since it scans every column in
+# left-to-right order and simply appends every "Verification*"-labeled
+# column it finds to `verification_cols`, regardless of what's in between.
+
+
+def map_sa_headers(ws: Worksheet, header_row: int, min_col: int, max_col: int) -> SAHeaderMap:
+    hmap = SAHeaderMap(id_col=min_col)
+
+    for col in range(min_col + 1, max_col + 1):
+        raw = ws.cell(row=header_row, column=col).value
+        text = clean_text(raw)
+        norm = normalize(text)
+        if not norm:
+            continue
+        norm_sing = normalize_singular(text)
+
+        if norm.startswith("verification"):
+            # Keep the ORIGINAL (non-singularized) text for this one, since
+            # extract_date() needs to find the literal date digits, and
+            # "verification" itself never pluralizes so no tolerance is
+            # needed here anyway.
+            hmap.verification_cols.append((col, text))
+        elif "item" in norm_sing and "check" in norm_sing:
+            hmap.items_col = col
+        elif "affected" in norm_sing:
+            hmap.affected_col = col
+        elif "finding" in norm_sing:
+            hmap.findings_col = col
+        elif "recommend" in norm_sing or "safeguard" in norm_sing:
+            hmap.recommended_safeguards_col = col
+        elif "client" in norm_sing and "respons" in norm_sing:
+            hmap.client_response_col = col
+        elif "planned" in norm_sing and "completion" in norm_sing:
+            hmap.planned_completion_date_col = col
+        # else: leave unassigned (unrecognized column - ignored)
+
+    if not hmap.verification_cols:
+        warn(
+            "No 'Verification...' column was detected in the SA header row. "
+            "Rectification status will be left blank for all items."
+        )
+    if hmap.items_col is None:
+        warn('Could not find an "Items to check" column in the SA header row.')
+    if hmap.affected_col is None:
+        warn('Could not find an "Affected" column in the SA header row.')
+    if hmap.findings_col is None:
+        warn('Could not find a "Findings" column in the SA header row.')
+    if hmap.recommended_safeguards_col is None:
+        warn('Could not find a "Recommended Safeguards" column in the SA header row.')
+
+    return hmap
