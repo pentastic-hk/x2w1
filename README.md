@@ -55,6 +55,33 @@ python3 excel_to_word_findings.py path/to/follow-up-plan.xlsx --debug
 If you're too lazy to type the full path to your Excel file,
 drag your file from your Files Explorer onto the command line.
 
+## Smart Features
+
+### Auto detection of table corners
+
+The top-left table corner is detected by the top-left-most cell which has a border.
+
+### Auto detection of sheet
+
+The SRA sheet is detected in the following order:
+1. "SRA Follow-up"
+2. "Follow-up Items"
+3. the 3rd sheet
+
+The SA sheet is detected in the following order:
+1. "SA Follow-up"
+2. the 4th sheet
+
+If this mechanism cannot find the correct sheet,
+you can still pass the sheet name via the `--sheet` flag.
+
+### Default Generated File
+
+If an explicit filepath is not provided for the output file,
+the output file will be placed in the same folder as the input file,
+with the same name of the input file, followed by the format name, followed by `.docx`,
+i.e. `<input>-<format>.docx`.
+
 ## Refactoring
 
 See `efw/cli.py` (or run with `--help`) for the full option reference, and
